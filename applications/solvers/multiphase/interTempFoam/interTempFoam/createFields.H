@@ -59,6 +59,66 @@ const dimensionedScalar& rho1 = mixture.rho1();
 const dimensionedScalar& rho2 = mixture.rho2();
 
 
+const word pcDictName("phaseChangeProperties");
+autoPtr<thermalPhaseChangeModel> phaseChangePtr;
+
+if (mesh.time().db().found(pcDictName) || isFile(mesh.time().constant()/pcDictName))
+{
+    IOdictionary pcDict
+    (
+        IOobject
+        (
+            pcDictName,
+            runTime.constant(),
+            mesh,
+            IOobject::MUST_READ_IF_MODIFIED,
+            IOobject::NO_WRITE
+        )
+    );
+
+    phaseChangePtr = thermalPhaseChangeModel::New
+    (
+        pcDictName,
+        pcDict,
+        mixture,
+        T,
+        alpha1
+    );
+}
+else
+{
+    Info<< "No phaseChangeProperties found -- using noPhaseChange\n" << endl;
+
+    dictionary noDict;
+    noDict.add("model", word("noPhaseChange"));
+    noDict.add("T_sat",
+        dimensionedScalar("T_sat", dimTemperature, scalar(373.15)).value());
+    noDict.add("h_lv",
+        dimensionedScalar("h_lv", dimEnergy/dimMass, scalar(2.26e6)).value());
+
+    phaseChangePtr = thermalPhaseChangeModel::New
+    (
+        pcDictName,
+        noDict,
+        mixture,
+        T,
+        alpha1
+    );
+}
+
+surfaceScalarField phiTotal
+(
+    IOobject
+    (
+        "phiTotal",
+        runTime.timeName(),
+        mesh,
+        IOobject::NO_READ,
+        IOobject::NO_WRITE
+    ),
+    phi
+);
+
 // Need to store rho for ddt(rho, U)
 volScalarField rho
 (
@@ -85,7 +145,11 @@ surfaceScalarField rhoPhi
         IOobject::NO_READ,
         IOobject::NO_WRITE
     ),
-    fvc::interpolate(rho)*phi
+    fvc::interpolate(rho)
+    *(
+        phi
+
+    )
 );
 
 volScalarField rhoCp
@@ -175,6 +239,10 @@ if (p_rgh.needReference())
 
 mesh.setFluxRequired(p_rgh.name());
 mesh.setFluxRequired(alpha1.name());
+
+// Thermal phase-change model -- read from constant/phaseChangeProperties.
+// Falls back to noPhaseChange if the dictionary is absent.
+
 
 #include "createMRF.H"
 #include "createFvOptions.H"

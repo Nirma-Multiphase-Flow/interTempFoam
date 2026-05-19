@@ -90,10 +90,22 @@
 
     tmp<surfaceScalarField> phiCN(phi);
 
+    const surfaceScalarField phiStefan
+    (
+        phaseChangePtr->phiStefan()
+    );
+
     // Calculate the Crank-Nicolson off-centred volumetric flux
     if (ocCoeff > 0)
     {
-        phiCN = cnCoeff*phi + (1.0 - cnCoeff)*phi.oldTime();
+        phiCN =
+            cnCoeff*(phi + phiStefan)
+        + (1.0 - cnCoeff)
+        *(phi.oldTime() + phiStefan.oldTime());
+    }
+    else
+    {
+        phiCN = phi + phiStefan;
     }
 
     if (MULESCorr)
@@ -149,6 +161,10 @@
         // Cache the upwind-flux
         talphaPhi1Corr0 = talphaPhi1UD;
 
+        alpha1.max(0.0);
+        alpha1.min(1.0);
+        alpha1.correctBoundaryConditions();
+
         alpha2 = 1.0 - alpha1;
 
         mixture.correct();
@@ -162,18 +178,18 @@
         surfaceScalarField phir(phic*mixture.nHatf());
 
         alphaPhiUn =
-            fvc::flux
-            (
-                phi,
-                alpha1,
-                alphaScheme
-            )
-          + fvc::flux
-            (
-               -fvc::flux(-phir, alpha2, alpharScheme),
-                alpha1,
-                alpharScheme
-            );
+                fvc::flux
+                (
+                    (phiTotal),
+                    alpha1,
+                    alphaScheme
+                )
+            + fvc::flux
+                (
+                -fvc::flux(-phir, alpha2, alpharScheme),
+                    alpha1,
+                    alpharScheme
+                );
 
         if (MULESCorr)
         {
@@ -191,6 +207,10 @@
                 oneField(),
                 zeroField()
             );
+
+            alpha1.max(0.0);
+            alpha1.min(1.0);
+            alpha1.correctBoundaryConditions();
 
             // Under-relax the correction for all but the 1st corrector
             if (aCorr == 0)
@@ -218,7 +238,12 @@
                 oneField(),
                 zeroField()
             );
+
+            
         }
+        alpha1.max(0.0);
+        alpha1.min(1.0);
+        alpha1.correctBoundaryConditions();
 
         alpha2 = 1.0 - alpha1;
 
@@ -245,8 +270,12 @@
      == fv::localEulerDdtScheme<vector>::typeName
     )
     {
-        rhoPhi = alphaPhi10*(rho1f - rho2f) + phiCN*rho2f;
-        rhoCpPhi = alphaPhi10*(rho1*cp1 - rho2*cp2) + phiCN*rho2*cp2;
+        rhoPhi = alphaPhi10*(rho1f - rho2f) + phi*rho2f;
+        // rhoCpPhi uses fluid flux only: Stefan velocity carries latent heat
+        // (handled by Q_pc/Qcorr in TEqn), not sensible enthalpy.
+        // Using alphaPhi10 (which includes phiStefan) would inject
+        // ρCp_liq*T_liq into low-ρCp vapor cells → catastrophic T spike.
+        rhoCpPhi = phi * fvc::interpolate(rhoCp);
     }
     else
     {
@@ -259,10 +288,10 @@
 
         // Calculate the end-of-time-step mass flux
         rhoPhi = alphaPhi10*(rho1f - rho2f) + phi*rho2f;
-        rhoCpPhi =
-            alphaPhi10*(rho1*cp1 - rho2*cp2)
-            + phi*rho2*cp2;
+        rhoCpPhi = phi * fvc::interpolate(rhoCp);
     }
+
+    
 
     Info<< "Phase-1 volume fraction = "
         << alpha1.weightedAverage(mesh.Vsc()).value()

@@ -52,6 +52,7 @@ Description
 #include "fvOptions.H"
 #include "CorrectPhi.H"
 #include "fvcSmooth.H"
+#include "thermalPhaseChangeModel.H"
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
@@ -148,6 +149,14 @@ int main(int argc, char *argv[])
                 }
             }
 
+            if (pimple.firstIter())
+            {
+                phaseChangePtr->correct();
+                
+            }
+
+            phiTotal = phi + phaseChangePtr->phiStefan();
+
             #include "alphaControls.H"
             #include "alphaEqnSubCycle.H"
 
@@ -165,6 +174,17 @@ int main(int argc, char *argv[])
             {
                 #include "pEqn.H"
             }
+
+            // Update mixture thermal properties with current alpha after
+            // alphaEqn has moved the interface and pEqn has updated phi.
+            rho =
+                alpha1*rho1
+            + (scalar(1) - alpha1)*rho2;
+
+            rhoCp =
+                alpha1*rho1*cp1
+            + (scalar(1) - alpha1)*rho2*cp2;
+
 
             #include "TEqn.H"
 

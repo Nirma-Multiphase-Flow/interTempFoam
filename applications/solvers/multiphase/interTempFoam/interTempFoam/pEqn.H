@@ -42,7 +42,9 @@
     {
         fvScalarMatrix p_rghEqn
         (
-            fvm::laplacian(rAUf, p_rgh) == fvc::div(phiHbyA)
+            fvm::laplacian(rAUf, p_rgh)
+         ==
+            fvc::div(phiHbyA) - phaseChangePtr->PCV()
         );
 
         p_rghEqn.setReference(pRefCell, getRefCellValue(p_rgh, pRefCell));
@@ -52,6 +54,7 @@
         if (pimple.finalNonOrthogonalIter())
         {
             phi = phiHbyA - p_rghEqn.flux();
+
 
             p_rgh.relax();
 
