@@ -21,4 +21,4 @@ advectionSchemes/isoAdvection/isoAdvection.C
 
 sampledInterface/sampledInterface.C
 
-LIB = $(FOAM_LIBBIN)/libgeometricVoF
+LIB = $(FOAM_USER_LIBBIN)/libgeometricVoF

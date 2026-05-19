@@ -1,0 +1,9 @@
+thermalPhaseChangeModel/thermalPhaseChangeModel.C
+thermalPhaseChangeModel/newThermalPhaseChangeModel.C
+noPhaseChange/noPhaseChange.C
+InterfaceEquilibrium/InterfaceEquilibrium.C
+StefanEnergyJump/StefanEnergyJump.C
+StefanEquilibriumMerged/StefanEquilibriumMerged.C
+HardtWondra/HardtWondra.C
+
+LIB = $(FOAM_USER_LIBBIN)/libthermalPhaseChangeModels

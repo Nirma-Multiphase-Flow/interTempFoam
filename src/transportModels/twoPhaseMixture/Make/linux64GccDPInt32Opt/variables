@@ -1,1 +1,1 @@
-LIB = $(FOAM_LIBBIN)/libtwoPhaseMixture
+LIB = $(FOAM_USER_LIBBIN)/libtwoPhaseMixture

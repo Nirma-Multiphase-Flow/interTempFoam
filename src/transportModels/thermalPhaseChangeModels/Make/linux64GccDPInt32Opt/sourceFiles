@@ -1,0 +1,10 @@
+SOURCE = \
+thermalPhaseChangeModel/thermalPhaseChangeModel.C \
+thermalPhaseChangeModel/newThermalPhaseChangeModel.C \
+noPhaseChange/noPhaseChange.C \
+InterfaceEquilibrium/InterfaceEquilibrium.C \
+StefanEnergyJump/StefanEnergyJump.C \
+StefanEquilibriumMerged/StefanEquilibriumMerged.C \
+HardtWondra/HardtWondra.C \
+
+# sources

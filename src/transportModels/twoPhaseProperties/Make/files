@@ -4,4 +4,4 @@ alphaContactAngle/dynamicAlphaContactAngle/dynamicAlphaContactAngleFvPatchScalar
 alphaContactAngle/timeVaryingAlphaContactAngle/timeVaryingAlphaContactAngleFvPatchScalarField.C
 alphaFixedPressure/alphaFixedPressureFvPatchScalarField.C
 
-LIB = $(FOAM_LIBBIN)/libtwoPhaseProperties
+LIB = $(FOAM_USER_LIBBIN)/libtwoPhaseProperties
