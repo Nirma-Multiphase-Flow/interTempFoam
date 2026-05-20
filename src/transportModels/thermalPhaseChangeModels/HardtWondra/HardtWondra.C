@@ -474,29 +474,7 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
     // ringing.
     //==============================================================
 
-    volScalarField qnRaw
-    (
-        IOobject
-        (
-            "qnRaw",
-            mesh_.time().timeName(),
-            mesh_,
-            IOobject::NO_READ,
-            IOobject::NO_WRITE
-        ),
 
-        max
-        (
-            kEff*(gradT & nHat),
-
-            dimensionedScalar
-            (
-                "zeroQn",
-                dimPower/dimArea,
-                0
-            )
-        )
-    );
     //==============================================================
     // Smooth thermodynamic activation
     //==============================================================
@@ -539,10 +517,64 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
     );
 
 
-    qn_ = qnRaw*evapSwitch;
+    volScalarField condSwitch
+    (
+        IOobject
+        (
+            "condSwitch",
+            mesh_.time().timeName(),
+            mesh_,
+            IOobject::NO_READ,
+            IOobject::NO_WRITE
+        ),
+        0.5*(scalar(1) - tanh((TSense - T_sat_)/deltaT))
+    );
+
+    // Signed heat flux: positive = evaporation, negative = condensation
+    // evapSwitch - condSwitch = tanh((T-Tsat)/deltaT): smooth sign at Tsat
+    //qn_ = qnRaw*(evapSwitch);
 
         
+    //==============================================================
+    // Directional interfacial conductive heat flux
+    //
+    // nHat points vapor -> liquid.
+    //
+    // For wall|vapor|liquid evaporation:
+    //
+    //     gradT · nHat < 0
+    //
+    // but evaporation must produce:
+    //
+    //     mdot > 0
+    //
+    // Therefore define:
+    //
+    //     qn_ = -kEff*(gradT · nHat)
+    //
+    // so that:
+    //   evaporation  -> qn_ > 0
+    //   condensation -> qn_ < 0
+    //
+    // This preserves directional transport physics and removes
+    // the need for artificial sign reconstruction via T-Tsat.
+    //==============================================================
 
+    const volScalarField qnSigned
+    (
+        IOobject
+        (
+            "qnSigned",
+            mesh_.time().timeName(),
+            mesh_,
+            IOobject::NO_READ,
+            IOobject::NO_WRITE
+        ),
+    -kEff*(gradT & nHat)
+    );
+
+    qn_ = qnSigned * evapSwitch;
+    
     // =========================================================================
     // STEP 7 – Raw Stefan mass flux  [kg/m³/s]
     //
@@ -564,7 +596,7 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
     // exclude (alpha is in [1e-3, 1-1e-3] at contact lines just like at the
     // bulk interface).
   
-    mdotRaw_ *= interfaceMask;
+    //mdotRaw_ *= interfaceMask;
 
     // =========================================================================
     // STEP 8 – Helmholtz redistribution
@@ -587,6 +619,7 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
     // =========================================================================
 
     Info<< "max(mdotRaw) = " << gMax(mdotRaw_) << endl;
+    Info<< "min(mdotRaw) = " << gMin(mdotRaw_) << endl;
 
     const dimensionedScalar lambdaSqr
     (
@@ -605,16 +638,7 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
             IOobject::NO_READ,
             IOobject::NO_WRITE
         ),
-        max
-        (
-            mdotRaw_,
-            dimensionedScalar
-            (
-                "zero",
-                mdotRaw_.dimensions(),
-                0
-            )
-        )
+        mdotRaw_  // signed: positive=evap, negative=cond
     );
 
     fvScalarMatrix mdotEqn
@@ -761,11 +785,11 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
     // Compact support centered around alpha = 0.5
     surfaceScalarField interfaceMaskF
     (
-        16.0*alphaIf*(scalar(1.0) - alphaIf)
+        4.0*alphaIf*(scalar(1.0) - alphaIf)
     );
 
     // Sharpen strongly
-    interfaceMaskF = sqr(interfaceMaskF);
+    //interfaceMaskF = sqr(interfaceMaskF);
 
     // Apply compact localization
     phiStefan_ *= interfaceMaskF;
@@ -836,8 +860,12 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
     }
     else
     {
-        Qcorr_ =
-            dimensionedScalar("zero", dimensionSet(1,-1,-3,0,0,0,0), Zero);
+        Qcorr_ = dimensionedScalar
+        (
+            "zero",
+            Qcorr_.dimensions(),
+            Zero
+        );
     }
 
 
