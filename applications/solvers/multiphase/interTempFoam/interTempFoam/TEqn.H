@@ -72,6 +72,7 @@ fvScalarMatrix TEqn
   - fvm::laplacian(kappaf, T)
   + fvm::Sp(Acoeff, T)
  ==
+    Acoeff*Tsat
   - Q_cond
   + phaseChangePtr->Qcorr()
 );

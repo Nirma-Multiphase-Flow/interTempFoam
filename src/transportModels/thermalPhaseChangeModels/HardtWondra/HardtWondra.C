@@ -168,6 +168,13 @@ Foam::thermalPhaseChangeModels::HardtWondra::HardtWondra
         )
     ),
 
+    harmonicBias_
+    (
+        "harmonicBias",
+        dimless,
+        dict.lookupOrDefault<scalar>("harmonicBias", 0.3)
+    ),
+
     nSmoothIter_     (dict.lookupOrDefault<label> ("nSmoothIter",      2)),
     alphaSmoothWidth_(dict.lookupOrDefault<scalar>("alphaSmoothWidth",  0.5)),
     lambdaSmearCells_(dict.lookupOrDefault<scalar>("lambdaSmearCells",  1.5)),
@@ -382,7 +389,7 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
         max
         (
             alphaGeom * k_vap_
-        + (scalar(1) - alphaGeom) * k_liq_,
+        + harmonicBias_*(scalar(1) - alphaGeom) * k_liq_,
             dimensionedScalar
             (
                 "kappaMin",
@@ -795,7 +802,7 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
     // interface recession.
     // ------------------------------------------------------------
 
-    for (label i=0; i<1; ++i)
+    for (label i=0; i<0; ++i)
     {
         Q_pc_ +=
             fvc::laplacian(lambdaSqr, Q_pc_);

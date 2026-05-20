@@ -152,6 +152,8 @@ class HardtWondra
         //- Vapour thermal conductivity  [W/m/K]
         dimensionedScalar k_vap_;
 
+        dimensionedScalar harmonicBias_;
+
 
     // Private member functions
 
