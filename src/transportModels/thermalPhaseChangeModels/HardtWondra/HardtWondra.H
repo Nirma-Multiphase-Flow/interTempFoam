@@ -154,6 +154,10 @@ class HardtWondra
 
         dimensionedScalar harmonicBias_;
 
+        //- Absolute AiFloor [1/m]: division-by-zero guard in mdot/(Ai+AiFloor).
+        //  Replaces the mesh-dependent 0.005/h_ref which suppressed Ustef on fine meshes.
+        scalar AiFloorAbs_;
+
 
     // Private member functions
 

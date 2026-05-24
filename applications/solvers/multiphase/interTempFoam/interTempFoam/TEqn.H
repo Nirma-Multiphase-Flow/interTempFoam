@@ -24,14 +24,23 @@ const volScalarField Q_pc_now = phaseChangePtr->Q_pc();
 // Condensation arm (Q_pc < 0) falls through to explicit Q_cond.
 // ─────────────────────────────────────────────────────────────────────────────
 const dimensionedScalar Tsat = phaseChangePtr->T_sat();
-const dimensionedScalar eps_T("eps_T", dimTemperature, 5.0);
+const dimensionedScalar eps_T("eps_T", dimTemperature, 2.5);
+
+const scalar implicitFactor = 0.5;
 
 const volScalarField Acoeff
 (
+    implicitFactor
+   *
     max
     (
         Q_pc_now / max(T - Tsat, eps_T),
-        dimensionedScalar("zero", dimensionSet(1,-1,-3,-1,0,0,0), 0)
+        dimensionedScalar
+        (
+            "zero",
+            dimensionSet(1,-1,-3,-1,0,0,0),
+            0
+        )
     )
 );
 
@@ -62,6 +71,25 @@ const volScalarField Q_cond
 // ─────────────────────────────────────────────────────────────────────────────
 const volScalarField indicator_TEqn = 4.0*alpha1*(scalar(1.0) - alpha1);
 
+// Anti-trench floor: one-sided stiff implicit restoration of T → Tsat in the
+// diffuse interface zone.  Completes the support structure described in the
+// comment block above (was planned but never wired into the matrix).
+//
+// Gating logic:
+//   indicator_TEqn = 4α(1-α) = 0 in pure bulk phases → inactive in bulk
+//   pos(Tsat - T)  = 0 when T > Tsat → does NOT disturb the hot-side
+//                    conductive gradient that drives qn
+//
+// Stiffness: C_floor × rhoCp/dt >> typical Acoeff from Q_pc linearisation,
+// so T cannot fall below Tsat in the interface zone within one timestep.
+const dimensionedScalar C_floor("C_floor", dimless, scalar(5.0));
+const volScalarField Acoeff_floor
+(
+    C_floor
+   * (rhoCp / mesh.time().deltaT())
+   * indicator_TEqn
+   * pos(Tsat - T)
+);
 
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -70,9 +98,9 @@ fvScalarMatrix TEqn
     rhoCp * fvm::ddt(T)
   + fvm::div(rhoCpPhi, T)
   - fvm::laplacian(kappaf, T)
-  + fvm::Sp(Acoeff, T)
+  + fvm::Sp(Acoeff + Acoeff_floor, T)
  ==
-    Acoeff*Tsat
+    (Acoeff*Tsat + Acoeff_floor*Tsat)
   - Q_cond
   + phaseChangePtr->Qcorr()
 );

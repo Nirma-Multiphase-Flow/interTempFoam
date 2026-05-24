@@ -185,7 +185,9 @@ Foam::thermalPhaseChangeModels::HardtWondra::HardtWondra
         (dict.lookupOrDefault<Switch>("useEnthalpyCorrection", Switch(true))),
 
     k_liq_("k_liq", dimPower/dimLength/dimTemperature, dict),
-    k_vap_("k_vap", dimPower/dimLength/dimTemperature, dict)
+    k_vap_("k_vap", dimPower/dimLength/dimTemperature, dict),
+
+    AiFloorAbs_(dict.lookupOrDefault<scalar>("AiFloorAbs", 50.0))
 {
     // Set mdot_ BCs for the Helmholtz solve.
     //   Physical patches (walls, inlets, outlets): fixedValue 0
@@ -409,6 +411,20 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
     //   over-driving Stefan flux reconstruction
     //==============================================================
 
+    // One-sided TSense: clip T from below at T_sat.
+    //
+    // Root cause of qn suppression (M1): in the diffuse interface zone the
+    // latent sink pins T ≈ Tsat on both sides, so gradT ≈ 0 exactly where
+    // |∇α| is largest. The physical driving gradient lives in the hot-phase
+    // bulk (vapor for evaporation, liquid for melting) where T > Tsat.
+    //
+    // max(T_, T_sat_) zeroes out the cold-side temperature contribution:
+    //   - hot phase (T > Tsat): max returns T  → full gradient preserved
+    //   - cold phase / interface (T ≈ Tsat): max returns Tsat → zero gradient
+    //   fvc::grad(TSense) at the interface then reflects only the hot-side
+    //   neighbor's gradient, which is the correct one-sided Stefan condition.
+    //
+    // This is READ-ONLY: TSense never enters T_, TEqn, or any conservation eqn.
     volScalarField TSense
     (
         IOobject
@@ -419,30 +435,18 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
             IOobject::NO_READ,
             IOobject::NO_WRITE
         ),
-        T_
+        max(T_, T_sat_)
     );
 
-
-    // Mild localized smoothing ONLY for thermodynamic sensing
-    //
-    // Keep extremely weak:
-    // - preserves physical gradients
-    // - suppresses only grid-scale oscillations
-
-    const scalar tempSmoothCoeff = 0.15;
-
+    // Mild smoothing to suppress VOF staircase noise (unchanged coefficient).
     const dimensionedScalar D_Tsense
     (
         "D_Tsense",
         dimArea/dimTime,
-        tempSmoothCoeff*h_ref*h_ref/dt
+        scalar(0.15)*h_ref*h_ref/dt
     );
 
-
-    // Single pseudo-diffusion iteration ONLY
-    TSense +=
-        fvc::laplacian(D_Tsense, TSense)*dt_dim;
-
+    //TSense += fvc::laplacian(D_Tsense, TSense)*dt_dim;
     TSense.correctBoundaryConditions();
 
 
@@ -560,6 +564,10 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
     // the need for artificial sign reconstruction via T-Tsat.
     //==============================================================
 
+    // Signed interfacial conductive heat flux using one-sided TSense gradient.
+    // nHat points vapor→liquid (standard VOF convention).
+    // For evaporation (hot phase on vapor side): gradT·nHat < 0, so qnSigned > 0.
+    // For melting (hot phase on liquid side): same sign result via max(T,Tsat) clip.
     const volScalarField qnSigned
     (
         IOobject
@@ -570,10 +578,13 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
             IOobject::NO_READ,
             IOobject::NO_WRITE
         ),
-    -kEff*(gradT & nHat)
+        -kEff*(gradT & nHat)
     );
 
-    qn_ = qnSigned * evapSwitch;
+    // max(T_,T_sat_) already zeros the cold-side gradient, so evapSwitch is
+    // redundant.  Factor of 2 corrects the Gauss-linear averaging at the
+    // interface cell (symmetric stencil gives 0.5× the one-sided snGrad).
+    qn_ = qnSigned * scalar(2);
     
     // =========================================================================
     // STEP 7 – Raw Stefan mass flux  [kg/m³/s]
@@ -682,10 +693,10 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
     // Smooth saturation instead of hard clipping.
     // Prevents thermodynamic discontinuity while still bounding mdot.
 
-    mdot_ =
-        mdotLimiter
-    *tanh(mdot_/mdotLimiter);
-
+    //mdot_ =
+    //    mdotLimiter
+    //*tanh(mdot_/mdotLimiter);
+    mdot_ = min(max(mdot_, -mdotLimiter), mdotLimiter);
 
     // =========================================================================
     // STEP 10 – Under-relaxation
@@ -716,7 +727,33 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
             IOobject::NO_READ,
             IOobject::NO_WRITE
         ),
-        mdotRaw_
+        mdot_
+    );
+
+    // Absolute AiFloor: division-by-zero guard only.
+    // Previously 0.005/h_ref (mesh-dependent): suppressed Ustef by ~30-50% on fine
+    // meshes (h_ref=25μm → AiFloor=200/m vs Ai=660/m). Fixed to a constant value
+    // so phiStefan amplitude is mesh-invariant when qn is correct.
+    const dimensionedScalar AiFloor
+    (
+        "AiFloor",
+        interfaceArea_.dimensions(),
+        AiFloorAbs_
+    );
+
+    volScalarField mdotTransport
+    (
+        IOobject
+        (
+            "mdotTransport",
+            mesh_.time().timeName(),
+            mesh_,
+            IOobject::NO_READ,
+            IOobject::NO_WRITE
+        ),
+
+        0.8*mdot_
+    + 0.2*mdotRaw_
     );
 
     volScalarField mdotInterfacial
@@ -729,19 +766,16 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
             IOobject::NO_READ,
             IOobject::NO_WRITE
         ),
-        mdotStefan
+
+        mdotTransport
     /
-        max
         (
-            interfaceArea_,
-            dimensionedScalar
-            (
-                "AiMin",
-                interfaceArea_.dimensions(),
-                SMALL
-            )
+            interfaceArea_
+        + AiFloor
         )
     );
+
+    //
 
     // Face interpolation
     const surfaceScalarField mdotInterfacialf
@@ -749,10 +783,45 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
         fvc::interpolate(mdotInterfacial)
     );
 
-    const surfaceVectorField nHatf
+    //const surfaceVectorField nHatf
+    //(
+      //  fvc::interpolate(nHat)
+    //);
+
+    volVectorField nHatSmooth
     (
-        fvc::interpolate(nHat)
+        IOobject
+        (
+            "nHatSmooth",
+            mesh_.time().timeName(),
+            mesh_,
+            IOobject::NO_READ,
+            IOobject::NO_WRITE
+        ),
+
+        nHat
     );
+
+    for (label i=0; i<2; ++i)
+    {
+        nHatSmooth +=
+            fvc::laplacian(lambdaSqr, nHatSmooth);
+
+        nHatSmooth.correctBoundaryConditions();
+    }
+
+    nHatSmooth =
+        nHatSmooth
+    /
+        (
+            mag(nHatSmooth)
+        + dimensionedScalar
+            (
+                "epsN",
+                dimless,
+                SMALL
+            )
+        );
 
     const surfaceScalarField rhoInt
     (
@@ -762,6 +831,11 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
             fvc::interpolate(alphaGeom)/mixture_.rho1()
         + (1.0 - fvc::interpolate(alphaGeom))/mixture_.rho2()
         )
+    );
+
+    const surfaceVectorField nHatf
+    (
+        fvc::interpolate(nHatSmooth)
     );
 
     const surfaceScalarField Ustef
@@ -782,16 +856,25 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
         fvc::interpolate(alphaGeom)
     );
 
-    // Compact support centered around alpha = 0.5
+    // Flat-top localization mask: unity for α ∈ [eps, 1-eps], linear ramp to
+    // zero outside.  This prevents lateral Stefan fluxes in near-pure-phase cells
+    // (noisy nHat → 2D instability) while keeping phiStefan uniform across the
+    // interface interior (no differential advection speed → no cancellation).
+    // With a bell-shaped mask (4α(1-α)), the outer solid cells solidify because
+    // Ustef on the outward face < Ustef on the inward face, cutting efficiency to
+    // ~17%.  The flat top removes this gradient: all interior faces have mask=1.
+    const dimensionedScalar maskAlphaMin_
+    (
+        "maskAlphaMin", dimless, scalar(0.05)
+    );
     surfaceScalarField interfaceMaskF
     (
-        4.0*alphaIf*(scalar(1.0) - alphaIf)
+        min
+        (
+            min(alphaIf, scalar(1.0) - alphaIf) / maskAlphaMin_,
+            dimensionedScalar("one", dimless, scalar(1.0))
+        )
     );
-
-    // Sharpen strongly
-    //interfaceMaskF = sqr(interfaceMaskF);
-
-    // Apply compact localization
     phiStefan_ *= interfaceMaskF;
     // =========================================================================
     // STEP 11 – Latent heat source  [W/m³]
@@ -972,6 +1055,7 @@ bool Foam::thermalPhaseChangeModels::HardtWondra::read
     RelaxFac_         = dict.lookupOrDefault<scalar>("RelaxFac",          1.0);
     useEnthalpyCorrection_ =
         dict.lookupOrDefault<Switch>("useEnthalpyCorrection", Switch(true));
+    AiFloorAbs_       = dict.lookupOrDefault<scalar>("AiFloorAbs",        50.0);
 
     k_liq_ = dimensionedScalar("k_liq", dimPower/dimLength/dimTemperature, dict);
     k_vap_ = dimensionedScalar("k_vap", dimPower/dimLength/dimTemperature, dict);
