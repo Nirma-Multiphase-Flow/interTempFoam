@@ -1,118 +1,103 @@
-// ─── note: ghost-source correction removed ───────────────────────────────────
-// The conservative fvm::ddt(rhoCp,T) + fvm::div(rhoCpPhi,T) carries a ghost
-// term T·[d(ρCp)/dt + ∇·(ρCpU)] at the interface.  Correcting it requires
-// rhoCp and rhoCpPhi to be updated within the PIMPLE iteration (now done in
-// the main loop before this file is included).  The residual ghost error is
-// O(CFL × ΔρCp/ρCp) per step — negligible for Co < 0.1.
-// ─────────────────────────────────────────────────────────────────────────────
-
-// Harmonic-mean face conductivity from the phase-change model.
-// For HardtWondra: k_harm = k_l*k_v / (α·k_v + (1-α)·k_l).
-// For other models: falls back to arithmetic mixture.kappaf().
-// Harmonic mean is physically correct for series heat resistors at the
-// VOF interface; arithmetic overpredicts by ~14× at α=0.5 for water/steam.
+// Face conductivity (harmonic mean — unchanged)
 surfaceScalarField kappaf = phaseChangePtr->kappaf();
 
-// Cache Q_pc — called once, used twice below
-const volScalarField Q_pc_now = phaseChangePtr->Q_pc();
+// ── Latent source fields ──────────────────────────────────────────────────
+// Q_pc_now     : kinematic path (10× floor) — used for Qcorr, Q_cond
+// Q_pc_th_now  : thermal path  ( 1× floor) — used for Acoeff only
+const volScalarField Q_pc_now    = phaseChangePtr->Q_pc();
+const volScalarField Q_pc_th_now = phaseChangePtr->Q_pc_thermal();
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Implicit linearisation:  Q_pc ≈ Acoeff · (T − Tsat)
-//
-// Acoeff ≥ 0 for the evaporation arm (T > Tsat, Q_pc > 0).
-// eps_T floor prevents division by near-zero in equilibrium cells.
-// Condensation arm (Q_pc < 0) falls through to explicit Q_cond.
-// ─────────────────────────────────────────────────────────────────────────────
-const dimensionedScalar Tsat = phaseChangePtr->T_sat();
+const dimensionedScalar Tsat  = phaseChangePtr->T_sat();
 const dimensionedScalar eps_T("eps_T", dimTemperature, 2.5);
-
 const scalar implicitFactor = 0.5;
 
+// ── Main latent Acoeff (thermal path — ~10× stronger than before) ─────────
 const volScalarField Acoeff
 (
     implicitFactor
-   *
-    max
+  * max
     (
-        Q_pc_now / max(T - Tsat, eps_T),
-        dimensionedScalar
-        (
-            "zero",
-            dimensionSet(1,-1,-3,-1,0,0,0),
-            0
-        )
+        Q_pc_th_now / max(T - Tsat, eps_T),
+        dimensionedScalar("zero", dimensionSet(1,-1,-3,-1,0,0,0), 0)
     )
 );
 
-// Condensation residual: Q_pc_now where Q_pc_now < 0, else 0
+// Condensation explicit source (still uses kinematic Q_pc — unchanged)
 const volScalarField Q_cond
 (
-    min
-    (
-        Q_pc_now,
-        dimensionedScalar("zero", dimensionSet(1,-1,-3,0,0,0,0), 0)
-    )
+    min(Q_pc_now, dimensionedScalar("zero", dimensionSet(1,-1,-3,0,0,0,0), 0))
 );
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Anti-trench saturation floor
-//
-// Root cause of cold trench:
-//   Acoeff = Q_pc/(T-Tsat) ~ O(1e7) W/(m³·K)  <<  rhoCp/dt ~ O(4e10) W/(m³·K)
-//   The Newton-linearised correction is ~10,000x weaker than the ddt term,
-//   so T can fall freely below Tsat within a timestep as the Helmholtz-
-//   redistributed Q_pc drains liquid-side cells faster than conduction refills.
-//
-// Fix: one-sided stiff penalty that activates ONLY when T < Tsat in the
-// diffuse zone.  C_floor*(rhoCp/dt) makes the correction 10,000x stiffer
-// than the ddt term → T restored to Tsat within the same timestep.
-// subcoolMask → 0 when T > Tsat, so the evaporation-driving gradient is
-// not disturbed.
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Diffuse-interface indicator ───────────────────────────────────────────
 const volScalarField indicator_TEqn = 4.0*alpha1*(scalar(1.0) - alpha1);
 
-// Anti-trench floor: one-sided stiff implicit restoration of T → Tsat in the
-// diffuse interface zone.  Completes the support structure described in the
-// comment block above (was planned but never wired into the matrix).
-//
-// Gating logic:
-//   indicator_TEqn = 4α(1-α) = 0 in pure bulk phases → inactive in bulk
-//   pos(Tsat - T)  = 0 when T > Tsat → does NOT disturb the hot-side
-//                    conductive gradient that drives qn
-//
-// Stiffness: C_floor × rhoCp/dt >> typical Acoeff from Q_pc linearisation,
-// so T cannot fall below Tsat in the interface zone within one timestep.
+// ── Anti-trench floor (cold side) — UNCHANGED ────────────────────────────
+// Prevents T dropping below Tsat in diffuse zone.
 const dimensionedScalar C_floor("C_floor", dimless, scalar(5.0));
 const volScalarField Acoeff_floor
 (
     C_floor
-   * (rhoCp / mesh.time().deltaT())
-   * indicator_TEqn
-   * pos(Tsat - T)
+  * (rhoCp / mesh.time().deltaT())
+  * indicator_TEqn
+  * pos(Tsat - T)
 );
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Anti-superheat floor (hot side) — COLD-PHASE GATE ────────────────────
+// Prevents non-physical T > Tsat in the solid side of the diffuse zone.
+// Gate: alpha1 > 0.5 = solid side (for melting, coldPhaseIsHighAlpha1=true).
+//       Excludes liquid-side cells (alpha1 < 0.5) where T > Tsat is the
+//       physical driving gradient for qn → no suppression of interface speed.
+// coldPhaseIsHighAlpha1 read from phaseChangeProperties in createFields.H.
+// REPLACE:
+// const volScalarField coldSideGate
+// (
+//     coldPhaseIsHighAlpha1
+//     ? pos(alpha1 - dimensionedScalar("half", dimless, 0.5))
+//     : pos(dimensionedScalar("half", dimless, 0.5) - alpha1)
+// );
 
+// WITH:
+volScalarField coldSideGate
+(
+    IOobject("coldSideGate", mesh.time().timeName(), mesh,
+             IOobject::NO_READ, IOobject::NO_WRITE),
+    mesh,
+    dimensionedScalar("one", dimless, scalar(1.0))
+);
+if (coldPhaseIsHighAlpha1)
+{
+    coldSideGate = pos(alpha1 - dimensionedScalar("half", dimless, scalar(0.5)));
+}
+else
+{
+    coldSideGate = pos(dimensionedScalar("half", dimless, scalar(0.5)) - alpha1);
+}
+
+const dimensionedScalar C_hot("C_hot", dimless, scalar(5.0));
+const volScalarField Acoeff_hot_floor
+(
+    C_hot
+  * (rhoCp / mesh.time().deltaT())
+  * indicator_TEqn
+  * pos(T - Tsat)
+  * coldSideGate           // ← restricts to cold-phase side only
+);
+
+// ── TEqn ─────────────────────────────────────────────────────────────────
 fvScalarMatrix TEqn
 (
     rhoCp * fvm::ddt(T)
   + fvm::div(rhoCpPhi, T)
   - fvm::laplacian(kappaf, T)
-  + fvm::Sp(Acoeff + Acoeff_floor, T)
+  + fvm::Sp(Acoeff + Acoeff_floor + Acoeff_hot_floor, T)
  ==
-    (Acoeff*Tsat + Acoeff_floor*Tsat)
+    (Acoeff*Tsat + Acoeff_floor*Tsat + Acoeff_hot_floor*Tsat)
   - Q_cond
   + phaseChangePtr->Qcorr()
 );
 
 TEqn.relax();
-
 TEqn.solve();
-
 T.correctBoundaryConditions();
 
-Info<< "min/max(T) = "
-    << min(T).value()
-    << " "
-    << max(T).value()
-    << endl;
+Info<< "min/max(T) = " << min(T).value() << " " << max(T).value() << endl;

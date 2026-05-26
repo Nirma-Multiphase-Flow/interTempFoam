@@ -175,4 +175,11 @@ bool Foam::thermalPhaseChangeModel::read(const dictionary& dict)
 }
 
 
+Foam::tmp<Foam::volScalarField>
+Foam::thermalPhaseChangeModel::Q_pc_thermal() const
+{
+    return Q_pc();
+}
+
+
 // ************************************************************************* //

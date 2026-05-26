@@ -121,6 +121,11 @@ public:
     // Pure-virtual: derived classes implement this
     virtual tmp<volScalarField> Q_pc() const = 0;   // W/m^3
 
+    // Thermally-corrected latent source for TEqn.
+    // Default returns Q_pc() — models that don't implement betaThermal blending
+    // are unaffected.
+    virtual tmp<volScalarField> Q_pc_thermal() const;
+
     // Enthalpy correction term [W/m³].
     // Non-zero only for models with Helmholtz mass redistribution (HardtWondra).
     // Default implementation returns zero so existing TEqn works unchanged.

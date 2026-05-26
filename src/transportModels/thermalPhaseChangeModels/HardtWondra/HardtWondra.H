@@ -108,6 +108,7 @@ class HardtWondra
         //- Volumetric latent-heat source  [W/m³]
         volScalarField Q_pc_;
 
+
         //- Enthalpy correction (Hardt & Wondra eq. 42)  [W/m³]
         volScalarField Qcorr_;
 
@@ -124,6 +125,11 @@ class HardtWondra
 
         //- Interface-normal conductive heat flux  [W/m³] = [W/m²]·[1/m]
         volScalarField qn_;
+
+        //- Thermal-path latent sink (1× floor, hot-side only)  [W/m³]
+        //  Used exclusively by TEqn Acoeff. Kinematic path (phiStefan)
+        //  continues to use Q_pc_ which is derived from the 10× floor.
+        volScalarField Q_pc_thermal_;
 
         //- Alpha pseudo-diffusion smoothing iterations
         label nSmoothIter_;
@@ -158,6 +164,12 @@ class HardtWondra
         //  Replaces the mesh-dependent 0.005/h_ref which suppressed Ustef on fine meshes.
         scalar AiFloorAbs_;
 
+        //- betaThermal blending: 0 = kinematic dTdn (10x diluted, original)
+        //                        1 = actual dTdn (h_ref floor)
+        //  Read from constant/phaseChangeProperties as "betaThermal"
+        scalar betaThermal_;
+
+        scalar kinFloorCells_;
 
     // Private member functions
 
@@ -192,6 +204,9 @@ public:
 
         //- Return volumetric latent-heat source  [W/m³]
         virtual tmp<volScalarField> Q_pc()   const override;
+
+        //- Return thermally-corrected latent-heat source  [W/m³]
+        virtual tmp<volScalarField> Q_pc_thermal() const;
 
         //- Return enthalpy correction term  [W/m³]
         virtual tmp<volScalarField> Qcorr()  const override;

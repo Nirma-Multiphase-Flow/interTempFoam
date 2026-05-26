@@ -79,6 +79,19 @@ Foam::thermalPhaseChangeModels::HardtWondra::HardtWondra
         dimensionedScalar("Q_pc", dimensionSet(1,-1,-3,0,0,0,0), Zero)
     ),
 
+    Q_pc_thermal_
+    (
+        IOobject
+        (
+            "Q_pc_thermal",
+            mesh_.time().timeName(),
+            mesh_,
+            IOobject::NO_READ,
+            IOobject::AUTO_WRITE
+        ),
+        Q_pc_   // initialise equal to Q_pc_; overwritten in calcQ_pc()
+    ),
+
     Qcorr_
     (
         IOobject
@@ -187,7 +200,11 @@ Foam::thermalPhaseChangeModels::HardtWondra::HardtWondra
     k_liq_("k_liq", dimPower/dimLength/dimTemperature, dict),
     k_vap_("k_vap", dimPower/dimLength/dimTemperature, dict),
 
-    AiFloorAbs_(dict.lookupOrDefault<scalar>("AiFloorAbs", 50.0))
+    AiFloorAbs_(dict.lookupOrDefault<scalar>("AiFloorAbs", 50.0)),
+
+    betaThermal_(dict.lookupOrDefault<scalar>("betaThermal", 0.0)),
+
+    kinFloorCells_(dict.lookupOrDefault<scalar>("kinFloorCells", 2.0))
 {
     // Set mdot_ BCs for the Helmholtz solve.
     //   Physical patches (walls, inlets, outlets): fixedValue 0
@@ -376,6 +393,44 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
     // Harmonic conductivity interpolation
     //==============================================================
 
+    // ============================================================
+    // Thermally compressed interface fraction
+    //
+    // PURPOSE:
+    // Reduce nonphysical cross-interface thermal leakage
+    // WITHOUT affecting:
+    //
+    // - alpha transport
+    // - interface motion
+    // - qn reconstruction
+    // - mdot
+    // - phiStefan
+    //
+    // This sharpens ONLY thermal conductivity support.
+    // ============================================================
+
+    const volScalarField alphaThermal
+    (
+        IOobject
+        (
+            "alphaThermal",
+            mesh_.time().timeName(),
+            mesh_,
+            IOobject::NO_READ,
+            IOobject::NO_WRITE
+        ),
+
+        0.5
+    *
+        (
+            scalar(1)
+        + tanh
+            (
+                4.0*(alphaGeom - 0.5)
+            )
+        )
+    );
+
     const volScalarField kEff
     (
         IOobject
@@ -390,8 +445,8 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
     /
         max
         (
-            alphaGeom * k_vap_
-        + harmonicBias_*(scalar(1) - alphaGeom) * k_liq_,
+            alphaThermal * k_vap_
+        + harmonicBias_*(scalar(1) - alphaThermal) * k_liq_,
             dimensionedScalar
             (
                 "kappaMin",
@@ -604,6 +659,42 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
         )
     );
 
+    // Thermal-path gradient field: 1× h_ref floor (vs kinematic 10× floor).
+    // Populated alongside dTdn_hot in the same neighbor-search loop.
+    // Used only for Q_pc_thermal_; does not affect phiStefan.
+    volScalarField dTdn_hot_actual
+    (
+        IOobject
+        (
+            "dTdn_hot_actual",
+            mesh_.time().timeName(),
+            mesh_,
+            IOobject::NO_READ,
+            IOobject::NO_WRITE
+        ),
+        mesh_,
+        dimensionedScalar
+        (
+            "zero",
+            dimTemperature/dimLength,
+            Zero
+        )
+    );
+
+    volScalarField dTdn_hot_thermal
+    (
+        IOobject
+        (
+            "dTdn_hot_thermal",
+            mesh_.time().timeName(),
+            mesh_,
+            IOobject::NO_READ,
+            IOobject::NO_WRITE
+        ),
+        mesh_,
+        dimensionedScalar("zero", dimTemperature/dimLength, Zero)
+    );
+
     const scalar TsatVal = T_sat_.value();
 
     forAll(mesh_.cells(), cellI)
@@ -621,11 +712,12 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
 
         const vector& nHatCell = nHat[cellI];
 
-        scalar bestDistance = GREAT;
-        scalar bestGradient = 0.0;
+        scalar bestDistance      = GREAT;
+        scalar bestGradient_kin  = 0.0;   // kinematic: 10× floor — drives phiStefan, UNCHANGED
+        scalar bestGradient_therm = 0.0;  // thermal:    1× floor — drives TEqn Acoeff, NEW
+        
 
-        const labelList& nbrCells =
-            mesh_.cellCells()[cellI];
+        const labelList& nbrCells = mesh_.cellCells()[cellI];
 
         forAll(nbrCells, nbrI)
         {
@@ -638,43 +730,35 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
                 mag(dVec & nHatCell);
 
             if (normalProj < SMALL)
-            {
                 continue;
-            }
 
-            const scalar Tnbr = T_[nbrCell];
+            const scalar Tnbr      = T_[nbrCell];
+            const scalar superheat = Tnbr - TsatVal;
 
-            const scalar superheat =
-                Tnbr - TsatVal;
-
-            // only heated-side neighbors contribute
             if (superheat < 1e-6)
-            {
                 continue;
-            }
 
-            // diffuse-interface compatible reconstruction distance
-            const scalar dInterface =
-                max(normalProj, 10*h_ref);
-
-            const scalar gradCandidate =
-                superheat/dInterface;
-
-            // nearest valid hot neighbor
             if (normalProj < bestDistance)
             {
                 bestDistance = normalProj;
-                bestGradient = gradCandidate;
+
+                // kinematic path: 10× floor for phiStefan stability (UNCHANGED)
+                bestGradient_kin = superheat / max(normalProj, kinFloorCells_*h_ref);
+
+                // thermal path: 1× floor — implicit Acoeff only, matrix-stable
+                bestGradient_therm = superheat / max(normalProj,    h_ref);
             }
         }
 
         if (bestDistance < GREAT)
         {
-            dTdn_hot[cellI] = bestGradient;
+            dTdn_hot[cellI]           = bestGradient_kin;    // kinematic — UNCHANGED
+            dTdn_hot_thermal[cellI]   = bestGradient_therm;  // thermal  — NEW
         }
         else
         {
-            dTdn_hot[cellI] = 0.0;
+            dTdn_hot[cellI]           = 0.0;
+            dTdn_hot_thermal[cellI]   = 0.0;
         }
     }
 
@@ -698,7 +782,26 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
     // NO ×2 correction anymore.
     // This is already a one-sided gradient.
     qn_ = qnSigned;
-    
+
+    // ─── Thermal-path latent sink ─────────────────────────────────────────────
+    // Q_pc_thermal_ uses the 1× floor gradient (dTdn_hot_thermal) gated by
+    // evapSwitch (≈1 on hot side, ≈0 on cold side).  This restricts the
+    // stronger sink to the hot phase where the non-physical superheat lives.
+    // Crucially, dTdn_hot (10× floor) feeding qn_ and mdotRaw_ is UNCHANGED.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    volScalarField qnThermal
+    (
+        IOobject("qnThermal_hw", mesh_.time().timeName(), mesh_,
+                 IOobject::NO_READ, IOobject::NO_WRITE),
+        kEff * dTdn_hot_thermal
+    );
+    qnThermal *= interfaceMask;
+
+    // evapSwitch already computed above: ≈1 where T>Tsat, ≈0 where T≤Tsat
+    Q_pc_thermal_ = interfaceArea_ * qnThermal * evapSwitch;
+
+
     // =========================================================================
     // STEP 7 – Raw Stefan mass flux  [kg/m³/s]
     //
@@ -710,6 +813,8 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
     // condition: k·∂T/∂n = ṁ·h_lv.  The factor |∇α_s| localises it to
     // the interface band and gives it the correct units for a volumetric source.
     // =========================================================================
+
+    // ────────────────────────────────────────────────────────────────────────
 
     mdotRaw_ = interfaceArea_ * qn_ / h_lv_;
 
@@ -1096,6 +1201,13 @@ Foam::thermalPhaseChangeModels::HardtWondra::Q_pc() const
 
 
 Foam::tmp<Foam::volScalarField>
+Foam::thermalPhaseChangeModels::HardtWondra::Q_pc_thermal() const
+{
+    return Q_pc_thermal_;
+}
+
+
+Foam::tmp<Foam::volScalarField>
 Foam::thermalPhaseChangeModels::HardtWondra::Qcorr() const
 {
     return Qcorr_;
@@ -1170,6 +1282,8 @@ bool Foam::thermalPhaseChangeModels::HardtWondra::read
     useEnthalpyCorrection_ =
         dict.lookupOrDefault<Switch>("useEnthalpyCorrection", Switch(true));
     AiFloorAbs_       = dict.lookupOrDefault<scalar>("AiFloorAbs",        50.0);
+    betaThermal_      = dict.lookupOrDefault<scalar>("betaThermal",        0.0);
+    kinFloorCells_ = dict.lookupOrDefault<scalar>("kinFloorCells", 2.0);
 
     k_liq_ = dimensionedScalar("k_liq", dimPower/dimLength/dimTemperature, dict);
     k_vap_ = dimensionedScalar("k_vap", dimPower/dimLength/dimTemperature, dict);

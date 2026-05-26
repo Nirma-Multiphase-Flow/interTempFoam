@@ -62,24 +62,31 @@ const dimensionedScalar& rho2 = mixture.rho2();
 const word pcDictName("phaseChangeProperties");
 autoPtr<thermalPhaseChangeModel> phaseChangePtr;
 
+// Kept at outer scope so TEqn.H can read flags (e.g. coldPhaseIsHighAlpha1)
+// without a registry lookup that would fail after this block exits.
+autoPtr<IOdictionary> pcDictPtr;
+
 if (mesh.time().db().found(pcDictName) || isFile(mesh.time().constant()/pcDictName))
 {
-    IOdictionary pcDict
+    pcDictPtr.reset
     (
-        IOobject
+        new IOdictionary
         (
-            pcDictName,
-            runTime.constant(),
-            mesh,
-            IOobject::MUST_READ_IF_MODIFIED,
-            IOobject::NO_WRITE
+            IOobject
+            (
+                pcDictName,
+                runTime.constant(),
+                mesh,
+                IOobject::MUST_READ_IF_MODIFIED,
+                IOobject::NO_WRITE
+            )
         )
     );
 
     phaseChangePtr = thermalPhaseChangeModel::New
     (
         pcDictName,
-        pcDict,
+        *pcDictPtr,
         mixture,
         T,
         alpha1
@@ -236,6 +243,18 @@ if (p_rgh.needReference())
     );
     p_rgh = p - rho*gh;
 }
+
+
+// Read cold-phase flag for TEqn hot-floor gate.
+// true  → melting:      solid = alpha1=1 = cold phase
+// false → evaporation:  vapor = alpha1=0 = cold phase
+// REPLACE the entire coldPhaseIsHighAlpha1 block with:
+const bool coldPhaseIsHighAlpha1 =
+(
+    pcDictPtr.valid()
+    ? pcDictPtr->lookupOrDefault<bool>("coldPhaseIsHighAlpha1", false)
+    : false
+);
 
 mesh.setFluxRequired(p_rgh.name());
 mesh.setFluxRequired(alpha1.name());
