@@ -501,7 +501,7 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
         scalar(0.15)*h_ref*h_ref/dt
     );
 
-    //TSense += fvc::laplacian(D_Tsense, TSense)*dt_dim;
+    TSense += fvc::laplacian(D_Tsense, TSense)*dt_dim;
     TSense.correctBoundaryConditions();
 
 
