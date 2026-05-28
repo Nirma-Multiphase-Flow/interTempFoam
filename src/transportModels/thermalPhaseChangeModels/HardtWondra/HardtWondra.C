@@ -281,35 +281,13 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
     for (label i = 0; i < nSmoothIter_; ++i)
     {
         alphaSmooth += fvc::laplacian(D_smooth, alphaSmooth) * dt_dim;
-        alphaSmooth.primitiveFieldRef() =
-            max(min(alphaSmooth.primitiveField(), scalar(1)), scalar(0));
         alphaSmooth.correctBoundaryConditions();
     }
+    // Clip once at the end — preserves proper Gaussian convolution shape
+    alphaSmooth.primitiveFieldRef() =
+        max(min(alphaSmooth.primitiveField(), scalar(1)), scalar(0));
+    alphaSmooth.correctBoundaryConditions();
 
-    volScalarField alphaGeom
-    (
-        IOobject
-        (
-            "alphaGeom_HW",
-            mesh_.time().timeName(),
-            mesh_,
-            IOobject::NO_READ,
-            IOobject::NO_WRITE
-        ),
-        alphaSmooth
-    );
-
-    // additional geometric smoothing ONLY for normals/interface area
-    for (label i=0; i<1; ++i)
-    {
-        alphaGeom +=
-            fvc::laplacian(D_smooth, alphaGeom)*dt_dim;
-
-        alphaGeom.primitiveFieldRef() =
-            max(min(alphaGeom.primitiveField(), scalar(1)), scalar(0));
-
-        alphaGeom.correctBoundaryConditions();
-    }
 
     // =========================================================================
     // STEP 2 – Interface area density  |∇α_s|  [1/m]
@@ -333,8 +311,8 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
             IOobject::NO_READ,
             IOobject::NO_WRITE
         ),
-        pos(alphaGeom - 0.01)
-    *pos(0.99 - alphaGeom)
+        pos(alphaSmooth - 0.01)
+    *pos(0.99 - alphaSmooth)
     );
 
     // Geometric interface gradient
@@ -348,7 +326,7 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
             IOobject::NO_READ,
             IOobject::NO_WRITE
         ),
-        fvc::grad(alphaGeom)
+        fvc::grad(alphaSmooth)
     );
 
     // Continuum interface area density [1/m]
@@ -426,7 +404,7 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
             scalar(1)
         + tanh
             (
-                4.0*(alphaGeom - 0.5)
+                4.0*(alphaSmooth - 0.5)
             )
         )
     );
@@ -446,7 +424,7 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
         max
         (
             alphaThermal * k_vap_
-        + harmonicBias_*(scalar(1) - alphaThermal) * k_liq_,
+        + (scalar(1) - alphaThermal) * k_liq_,
             dimensionedScalar
             (
                 "kappaMin",
@@ -479,48 +457,7 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
     //   fvc::grad(TSense) at the interface then reflects only the hot-side
     //   neighbor's gradient, which is the correct one-sided Stefan condition.
     //
-    // This is READ-ONLY: TSense never enters T_, TEqn, or any conservation eqn.
-    volScalarField TSense
-    (
-        IOobject
-        (
-            "TSense_HW",
-            mesh_.time().timeName(),
-            mesh_,
-            IOobject::NO_READ,
-            IOobject::NO_WRITE
-        ),
-        max(T_, T_sat_)
-    );
-
-    // Mild smoothing to suppress VOF staircase noise (unchanged coefficient).
-    const dimensionedScalar D_Tsense
-    (
-        "D_Tsense",
-        dimArea/dimTime,
-        scalar(0.15)*h_ref*h_ref/dt
-    );
-
-    TSense += fvc::laplacian(D_Tsense, TSense)*dt_dim;
-    TSense.correctBoundaryConditions();
-
-
-    //==============================================================
-    // Reconstruct temperature gradient from sensing field
-    //==============================================================
-
-    const volVectorField gradT
-    (
-        IOobject
-        (
-            "gradT_HW",
-            mesh_.time().timeName(),
-            mesh_,
-            IOobject::NO_READ,
-            IOobject::NO_WRITE
-        ),
-        fvc::grad(TSense)
-    );
+   
 
 
     //==============================================================
@@ -576,22 +513,6 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
     );
 
 
-    volScalarField condSwitch
-    (
-        IOobject
-        (
-            "condSwitch",
-            mesh_.time().timeName(),
-            mesh_,
-            IOobject::NO_READ,
-            IOobject::NO_WRITE
-        ),
-        0.5*(scalar(1) - tanh((TSense - T_sat_)/deltaT))
-    );
-
-    // Signed heat flux: positive = evaporation, negative = condensation
-    // evapSwitch - condSwitch = tanh((T-Tsat)/deltaT): smooth sign at Tsat
-    //qn_ = qnRaw*(evapSwitch);
 
         
     //==============================================================
@@ -700,7 +621,7 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
     forAll(mesh_.cells(), cellI)
     {
         // only interface cells
-        const scalar alphaCell = alphaGeom[cellI];
+        const scalar alphaCell = alphaSmooth[cellI];
 
         // Use interfaceArea directly instead of alpha thresholds.
         // This is much more robust for compressed VOF interfaces.
@@ -779,8 +700,6 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
 
     qnSigned *= interfaceMask;
 
-    // NO ×2 correction anymore.
-    // This is already a one-sided gradient.
     qn_ = qnSigned;
 
     // ─── Thermal-path latent sink ─────────────────────────────────────────────
@@ -850,78 +769,7 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
     Info<< "max(mdotRaw) = " << gMax(mdotRaw_) << endl;
     Info<< "min(mdotRaw) = " << gMin(mdotRaw_) << endl;
 
-    const dimensionedScalar lambdaSqr
-    (
-        "lambdaSqr",
-        dimArea,
-        Foam::sqr(lambdaSmearCells_ * h_ref)
-    );
-
-    volScalarField mdotSource
-    (
-        IOobject
-        (
-            "mdotSource",
-            mesh_.time().timeName(),
-            mesh_,
-            IOobject::NO_READ,
-            IOobject::NO_WRITE
-        ),
-        mdotRaw_  // signed: positive=evap, negative=cond
-    );
-
-    fvScalarMatrix mdotEqn
-    (
-        fvm::Sp
-        (
-            dimensionedScalar("one", dimless, scalar(1)),
-            mdot_
-        )
-    - fvm::laplacian(lambdaSqr, mdot_)
-    ==
-        mdotSource
-    );
-
-    mdotEqn.relax();
-
-    solve
-    (
-        mdotEqn,
-        mesh_.solverDict("mdot")
-    );
-
-     // Enforce zero mass transfer in bulk cells (optional safety check)
-
-    // =========================================================================
-    // STEP 9 – Hard clip on mdot
-    //
-    // mdotMax_ is the physical upper bound on mass transfer rate.
-    // For water/steam at 100°C: 100 kg/m³/s → Q_pc_max ≈ 2.26×10⁸ W/m³.
-    // This clip is a backstop safety limiter; for well-resolved simulations
-    // with correct λ it should not activate.
-    // =========================================================================
-
-    const dimensionedScalar mdotLimiter
-    (
-        "mdotLimiter",
-        mdot_.dimensions(),
-        mdotMax_
-    );
-
-    // Smooth saturation instead of hard clipping.
-    // Prevents thermodynamic discontinuity while still bounding mdot.
-
-    //mdot_ =
-    //    mdotLimiter
-    //*tanh(mdot_/mdotLimiter);
-    mdot_ = min(max(mdot_, -mdotLimiter), mdotLimiter);
-
-    // =========================================================================
-    // STEP 10 – Under-relaxation
-    // =========================================================================
-
-    mdot_ *= RelaxFac_;
-
+        
     //==============================================================
     // Localized Stefan transport flux
     //
@@ -1038,10 +886,10 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
 
     const surfaceScalarField rhoInt
     (
-        scalar(1)
-    / (
-            fvc::interpolate(alphaGeom)/mixture_.rho1()
-        + (scalar(1) - fvc::interpolate(alphaGeom))/mixture_.rho2()
+        
+      (
+            fvc::interpolate(alphaSmooth)*mixture_.rho1()
+        + (scalar(1) - fvc::interpolate(alphaSmooth))*mixture_.rho2()
         )
     );
 
@@ -1061,7 +909,7 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
     );
 
     // flat-top mask — unchanged
-    surfaceScalarField alphaIf(fvc::interpolate(alphaGeom));
+    surfaceScalarField alphaIf(fvc::interpolate(alphaSmooth));
     const dimensionedScalar maskAlphaMin_("maskAlphaMin", dimless, scalar(0.05));
     surfaceScalarField interfaceMaskF
     (
@@ -1120,23 +968,6 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
     Q_pc_ = mdotRaw_ * h_lv_;
 
 
-
-    // ------------------------------------------------------------
-    // Mild thermal redistribution ONLY for latent heat support.
-    //
-    // Broadens thermal sink slightly without broadening
-    // interface recession.
-    // ------------------------------------------------------------
-
-    for (label i=0; i<0; ++i)
-    {
-        Q_pc_ +=
-            fvc::laplacian(lambdaSqr, Q_pc_);
-
-        Q_pc_.correctBoundaryConditions();
-    }
-
-
     // =========================================================================
     // STEP 12 – Enthalpy correction
 
@@ -1156,19 +987,7 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
     // Magnitude: ~(cp_l-cp_v)·ΔT/h_lv of Q_pc ≈ 1-2% for water/steam at ΔT=10K.
     // =========================================================================
 
-    if (useEnthalpyCorrection_)
-    {
-        Qcorr_ = -mdot_ * (mixture_.cp1() - mixture_.cp2()) * (T_ - T_sat_);
-    }
-    else
-    {
-        Qcorr_ = dimensionedScalar
-        (
-            "zero",
-            Qcorr_.dimensions(),
-            Zero
-        );
-    }
+    
 
 
     // =========================================================================
@@ -1183,11 +1002,8 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
         << "  max(Ai)   = "
         << gMax(interfaceArea_.primitiveField())             << " /m"      << nl
         << "  max(|qn|) = "
-        << gMax(mag(qn_.primitiveField()))                   << " W/m2"   << nl
-        << "  max(mdot) = "
-        << gMax(mdot_.primitiveField())                      << " kg/m3/s"<< nl
-        << "  min(mdot) = "
-        << gMin(mdot_.primitiveField())                      << " kg/m3/s"<< endl;
+        << gMax(mag(qn_.primitiveField()))                   << " W/m2"   << nl;    
+        
 }
 
 
@@ -1282,7 +1098,7 @@ bool Foam::thermalPhaseChangeModels::HardtWondra::read
     useEnthalpyCorrection_ =
         dict.lookupOrDefault<Switch>("useEnthalpyCorrection", Switch(true));
     AiFloorAbs_       = dict.lookupOrDefault<scalar>("AiFloorAbs",        50.0);
-    betaThermal_      = dict.lookupOrDefault<scalar>("betaThermal",        0.0);
+
     kinFloorCells_ = dict.lookupOrDefault<scalar>("kinFloorCells", 2.0);
 
     k_liq_ = dimensionedScalar("k_liq", dimPower/dimLength/dimTemperature, dict);
