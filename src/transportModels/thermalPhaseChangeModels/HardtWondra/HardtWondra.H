@@ -85,6 +85,8 @@ SourceFiles
 #define HardtWondra_H
 
 #include "thermalPhaseChangeModel.H"
+#include "volFields.H"
+#include "surfaceFields.H"
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
@@ -116,6 +118,9 @@ class HardtWondra
         volScalarField mdot_;
 
         surfaceScalarField phiStefan_;
+
+        //- Cell-centred Stefan (interface) velocity vector  [m/s]
+        volVectorField UStefan_;
 
         //- Raw Stefan mass flux before Helmholtz smoothing  [kg/m³/s]
         volScalarField mdotRaw_;
@@ -171,6 +176,25 @@ class HardtWondra
 
         scalar kinFloorCells_;
 
+        //- Hamilton-Jacobi extrapolation controls
+        label nExtrapIter_;
+
+        scalar extrapCFL_;
+
+        scalar alphaPureLiquid_;
+
+        scalar alphaPureVapor_;
+
+        scalar maxGradT_;
+
+        //- RDF interface half-width in cells (gradient-scale calibration knob)
+        scalar interfaceWidthCells_;
+
+        //- Which phase is the cold/saturated one.
+        //  true  → melting: phase1 is solid (high alpha1 = cold); hot = melt (a < 0.5)
+        //  false → evaporation: phase1 is liquid (high alpha1 = hot)
+        bool coldPhaseIsHighAlpha1_;
+
     // Private member functions
 
         void calcQ_pc();
@@ -205,8 +229,11 @@ public:
         //- Return volumetric latent-heat source  [W/m³]
         virtual tmp<volScalarField> Q_pc()   const override;
 
-        //- Return thermally-corrected latent-heat source  [W/m³]
-        virtual tmp<volScalarField> Q_pc_thermal() const;
+        //- Return smooth latent-heat source for TEqn  [W/m³]
+        virtual tmp<volScalarField> Q_pc_thermal() const override;
+
+        //- Return the phase-change volume dilatation rate (Smooth/Helmholtz)
+        virtual tmp<volScalarField> PCV() const;
 
         //- Return enthalpy correction term  [W/m³]
         virtual tmp<volScalarField> Qcorr()  const override;

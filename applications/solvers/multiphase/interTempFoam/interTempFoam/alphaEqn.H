@@ -90,9 +90,13 @@
 
     tmp<surfaceScalarField> phiCN(phi);
 
+    // For coldPhaseIsHighAlpha1 (melting), nHat points from liquid into solid
+    // so the raw Stefan flux is negative (−x).  Negating it makes MULES advect
+    // alpha.solid in the +x direction, correctly eroding the solid.
     const surfaceScalarField phiStefan
     (
-        phaseChangePtr->phiStefan()
+        (coldPhaseIsHighAlpha1 ? scalar(-1) : scalar(1))
+      * phaseChangePtr->phiStefan()
     );
 
     // Calculate the Crank-Nicolson off-centred volumetric flux

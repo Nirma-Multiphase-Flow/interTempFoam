@@ -1,5 +1,6 @@
 #include "createRDeltaT.H"
 
+
 Info<< "Reading field p_rgh\n" << endl;
 volScalarField p_rgh
 (
@@ -36,6 +37,41 @@ immiscibleIncompressibleTwoPhaseMixture mixture(U, phi);
 
 volScalarField& alpha1(mixture.alpha1());
 volScalarField& alpha2(mixture.alpha2());
+
+
+// -----------------------------------------------------------------
+// geometricVoF reconstruction infrastructure
+// -----------------------------------------------------------------
+
+IOdictionary reconDict
+(
+    IOobject
+    (
+        "reconstructionDict",
+        runTime.system(),
+        mesh,
+        IOobject::MUST_READ,
+        IOobject::NO_WRITE
+    )
+);
+
+autoPtr<reconstructionSchemes> surfPtr
+(
+    reconstructionSchemes::New
+    (
+        alpha1,
+        phi,
+        U,
+        reconDict
+    )
+);
+
+reconstructionSchemes& surf = surfPtr();
+
+reconstructedDistanceFunction RDF(mesh);
+
+zoneDistribute& exchangeFields =
+    zoneDistribute::New(mesh);
 
 Info<< "Reading field T\n" << endl;
 
@@ -190,6 +226,12 @@ surfaceScalarField rhoCpPhi
 
     fvc::interpolate(rhoCp)*phi
 );
+
+Info<< "rhoCp min/max = "
+    << gMin(rhoCp)
+    << " "
+    << gMax(rhoCp)
+    << endl;
 
 typedef incompressibleInterPhaseTransportModel
     <

@@ -53,6 +53,9 @@ Description
 #include "CorrectPhi.H"
 #include "fvcSmooth.H"
 #include "thermalPhaseChangeModel.H"
+#include "reconstructionSchemes.H"
+#include "reconstructedDistanceFunction.H"
+#include "zoneDistribute.H"
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
@@ -149,18 +152,99 @@ int main(int argc, char *argv[])
                 }
             }
 
-            if (pimple.firstIter())
-            {
-                phaseChangePtr->correct();
-                
-            }
-
-            phiTotal = phi + phaseChangePtr->phiStefan();
-
             #include "alphaControls.H"
             #include "alphaEqnSubCycle.H"
 
+            surf.reconstruct();
+
+            // Diagnostic — kept for monitoring, NOT passed to constructRDF
+            {
+                volScalarField magGradAlpha(mag(fvc::grad(alpha1)));
+                scalar gMaxAlpha = gMax(magGradAlpha);
+                Info<< "gMax(|grad(alpha1)|) = " << gMaxAlpha << endl;
+                label nInterface = 0;
+                forAll(magGradAlpha, celli)
+                    if (magGradAlpha[celli] > 1e-3*gMaxAlpha) ++nInterface;
+                Info<< "interfaceMask cells = "
+                    << returnReduce(nInterface, sumOp<label>()) << endl;
+            }
+
+            
+            const scalar alphaTolRDF = 1e-4;
+            {
+                boolList filteredInterfaceCell(mesh.nCells(), false);
+                forAll(alpha1, celli)
+                {
+                    if (   alpha1[celli] > alphaTolRDF
+                        && alpha1[celli] < scalar(1) - alphaTolRDF)
+                    {
+                        filteredInterfaceCell[celli] = true;
+                    }
+                }
+                RDF.markCellsNearSurf(filteredInterfaceCell, 2);
+            }
+            RDF.constructRDF
+            (
+                RDF.nextToInterface(),
+                surf.centre(),
+                surf.normal(),
+                exchangeFields,
+                true
+            );
+
+            // Bootstrap fallback: seed RDF from (alpha-0.5)/|grad(alpha)| when
+            // no PLIC surface cells exist (step-function IC or first iteration).
+            // Threshold matches interfaceMask (1e-3 * gMax) to restrict seeding
+            // to interface-adjacent cells only and avoid near-zero division.
+            if (gMax(mag(RDF.primitiveField())) < SMALL)
+            {
+                const volVectorField gAlpha(fvc::grad(alpha1));
+                const scalar gMaxAlphaBS =
+                    max(gMax(mag(gAlpha.primitiveField())), SMALL);
+                const scalar gradThresh = 1e-3 * gMaxAlphaBS;
+
+                forAll(RDF, celli)
+                {
+                    const scalar magG = mag(gAlpha[celli]);
+                    if (magG > gradThresh)
+                        RDF[celli] = (alpha1[celli] - scalar(0.5)) / magG;
+                }
+                RDF.correctBoundaryConditions();
+                Info<< "RDF bootstrap: seeded from grad(alpha), "
+                    << "max(|RDF|) = "
+                    << gMax(mag(RDF.primitiveField())) << " m" << endl;
+            }
+
+            {
+                label nBand = 0;
+                forAll(RDF.nextToInterface(), celli)
+                    if (RDF.nextToInterface()[celli]) ++nBand;
+                Info<< "RDF: nextToInterface = "
+                    << returnReduce(nBand, sumOp<label>())
+                    << " cells, max(|RDF|) = "
+                    << gMax(mag(RDF.primitiveField())) << " m" << endl;
+            }
+
+            // Phase-change evaluated once per timestep (firstIter only).
+            // Calling correct() on every outer iteration causes surf.reconstruct()
+            // to run on a partially-moved alpha each time, producing inconsistent
+            // PLIC normals between iterations and a standing-wave instability in
+            // phiStefan.  The single-per-timestep evaluation is consistent with
+            // the explicit-source treatment of latent heat in interFoam-family
+            // solvers and introduces at most a one-timestep lag in T coupling.
+            if (pimple.firstIter())
+            {
+                phaseChangePtr->correct();
+            }
+
+            phiTotal =
+                phi
+              + (coldPhaseIsHighAlpha1 ? scalar(-1) : scalar(1))
+              * phaseChangePtr->phiStefan();
+
+            
             mixture.correct();
+
 
             if (pimple.frozenFlow())
             {

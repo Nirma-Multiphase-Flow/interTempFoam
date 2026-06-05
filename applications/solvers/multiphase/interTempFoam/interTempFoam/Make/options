@@ -17,7 +17,9 @@ EXE_INC = \
     -I$(LIB_SRC)/TurbulenceModels/turbulenceModels/lnInclude \
     -I$(LIB_SRC)/TurbulenceModels/incompressible/lnInclude \
     -I$(LIB_SRC)/TurbulenceModels/phaseIncompressible/lnInclude \
-    -I$(WM_PROJECT_USER_DIR)/src/transportModels/immiscibleIncompressibleTwoPhaseMixture/lnInclude
+    -I$(WM_PROJECT_USER_DIR)/src/transportModels/immiscibleIncompressibleTwoPhaseMixture/lnInclude \
+    -I$(WM_PROJECT_USER_DIR)/src/transportModels/geometricVoF/lnInclude \
+    -I/usr/lib/openfoam/openfoam2412/src/surfMesh/lnInclude
 
 EXE_LIBS = \
     -lfiniteVolume \
@@ -34,4 +36,5 @@ EXE_LIBS = \
     -lwaveModels \
     -lVoFphaseTurbulentTransportModels \
     -lincompressibleInterPhaseTransportModels \
-    -lthermalPhaseChangeModels
+    -lthermalPhaseChangeModels \
+    -lgeometricVoF
