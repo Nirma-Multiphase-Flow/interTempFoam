@@ -2,8 +2,11 @@
   =========                 |
   \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox
    \\    /   O peration     |
-    \\  /    A nd           | Copyright (C) 2016 Alex Rattner
+    \\  /    A nd           | www.openfoam.com
      \\/     M anipulation  |
+-------------------------------------------------------------------------------
+    Copyright (C) 2011 OpenFOAM Foundation
+    Copyright (C) 2016 OpenCFD Ltd.
 -------------------------------------------------------------------------------
 License
     This file is part of OpenFOAM.
@@ -21,45 +24,33 @@ License
     You should have received a copy of the GNU General Public License
     along with OpenFOAM.  If not, see <http://www.gnu.org/licenses/>.
 
+Global
+    continuityErrs
+
+Description
+    Calculates and prints the continuity errors.
+
 \*---------------------------------------------------------------------------*/
 
-#include "thermalPhaseChangeModel.H"
-
-// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
-
-Foam::autoPtr<Foam::thermalPhaseChangeModel>
-Foam::thermalPhaseChangeModel::New
-(
-    const word& name,
-    const dictionary& dict,
-    const immiscibleIncompressibleTwoPhaseMixture& mixture,
-    const volScalarField& T,
-    const volScalarField& alpha1
-)
 {
-    const word modelType(dict.lookup("model"));
-
-    Info<< "Selecting phase change model: " << modelType << endl;
-
-    auto* ctorPtr = dictionaryConstructorTable(modelType);
-
-    if (!ctorPtr)
-    {
-        FatalIOErrorInFunction(dict)
-            << "Unknown thermalPhaseChangeModel type '" << modelType << "'"
-            << nl << nl
-            << "Valid types:" << nl
-            << dictionaryConstructorTablePtr_->sortedToc()
-            << exit(FatalIOError);
-    }
-
-    return autoPtr<thermalPhaseChangeModel>
+    const DimensionedField<scalar, volMesh> contErr
     (
-        ctorPtr(name, dict, mixture, T, alpha1)
+        interpolatedCells.internalField()
+       *cellMask.internalField()
+       *fvc::div(phi)().internalField()
     );
 
+    scalar sumLocalContErr = runTime.deltaTValue()*
+        mag(contErr)().weightedAverage(mesh.V()).value();
 
+    scalar globalContErr = runTime.deltaTValue()*
+        contErr.weightedAverage(mesh.V()).value();
+    cumulativeContErr += globalContErr;
+
+    Info<< "time step continuity errors : sum local = " << sumLocalContErr
+        << ", global = " << globalContErr
+        << ", cumulative = " << cumulativeContErr
+        << endl;
 }
-
 
 // ************************************************************************* //

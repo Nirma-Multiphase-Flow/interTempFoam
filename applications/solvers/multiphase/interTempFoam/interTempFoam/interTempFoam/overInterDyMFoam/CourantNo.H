@@ -2,8 +2,10 @@
   =========                 |
   \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox
    \\    /   O peration     |
-    \\  /    A nd           | Copyright (C) 2016 Alex Rattner
+    \\  /    A nd           | www.openfoam.com
      \\/     M anipulation  |
+-------------------------------------------------------------------------------
+    Copyright (C) 2022 OpenCFD Ltd.
 -------------------------------------------------------------------------------
 License
     This file is part of OpenFOAM.
@@ -21,45 +23,36 @@ License
     You should have received a copy of the GNU General Public License
     along with OpenFOAM.  If not, see <http://www.gnu.org/licenses/>.
 
+Global
+    CourantNo
+
+Description
+    Calculates and outputs the mean and maximum Courant Numbers.
+
 \*---------------------------------------------------------------------------*/
 
-#include "thermalPhaseChangeModel.H"
+scalar CoNum = 0.0;
+scalar meanCoNum = 0.0;
 
-// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
-
-Foam::autoPtr<Foam::thermalPhaseChangeModel>
-Foam::thermalPhaseChangeModel::New
-(
-    const word& name,
-    const dictionary& dict,
-    const immiscibleIncompressibleTwoPhaseMixture& mixture,
-    const volScalarField& T,
-    const volScalarField& alpha1
-)
+if (mesh.nInternalFaces())
 {
-    const word modelType(dict.lookup("model"));
-
-    Info<< "Selecting phase change model: " << modelType << endl;
-
-    auto* ctorPtr = dictionaryConstructorTable(modelType);
-
-    if (!ctorPtr)
-    {
-        FatalIOErrorInFunction(dict)
-            << "Unknown thermalPhaseChangeModel type '" << modelType << "'"
-            << nl << nl
-            << "Valid types:" << nl
-            << dictionaryConstructorTablePtr_->sortedToc()
-            << exit(FatalIOError);
-    }
-
-    return autoPtr<thermalPhaseChangeModel>
+    surfaceScalarField phiMask
     (
-        ctorPtr(name, dict, mixture, T, alpha1)
+        localMin<scalar>(mesh).interpolate(cellMask + interpolatedCells)
     );
 
+    scalarField sumPhi
+    (
+        fvc::surfaceSum(mag(phiMask*phi))().internalField()
+    );
 
+    CoNum = 0.5*gMax(sumPhi/mesh.V().field())*runTime.deltaTValue();
+
+    meanCoNum =
+        0.5*(gSum(sumPhi)/gSum(mesh.V().field()))*runTime.deltaTValue();
 }
 
+Info<< "Courant Number mean: " << meanCoNum
+    << " max: " << CoNum << endl;
 
 // ************************************************************************* //

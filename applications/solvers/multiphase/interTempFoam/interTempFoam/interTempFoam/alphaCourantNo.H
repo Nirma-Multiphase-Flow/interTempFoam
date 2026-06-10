@@ -2,8 +2,10 @@
   =========                 |
   \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox
    \\    /   O peration     |
-    \\  /    A nd           | Copyright (C) 2016 Alex Rattner
+    \\  /    A nd           | www.openfoam.com
      \\/     M anipulation  |
+-------------------------------------------------------------------------------
+    Copyright (C) 2011-2017 OpenFOAM Foundation
 -------------------------------------------------------------------------------
 License
     This file is part of OpenFOAM.
@@ -21,45 +23,37 @@ License
     You should have received a copy of the GNU General Public License
     along with OpenFOAM.  If not, see <http://www.gnu.org/licenses/>.
 
+Global
+    alphaCourantNo
+
+Description
+    Calculates and outputs the mean and maximum Courant Numbers.
+
 \*---------------------------------------------------------------------------*/
 
-#include "thermalPhaseChangeModel.H"
-
-// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
-
-Foam::autoPtr<Foam::thermalPhaseChangeModel>
-Foam::thermalPhaseChangeModel::New
+scalar maxAlphaCo
 (
-    const word& name,
-    const dictionary& dict,
-    const immiscibleIncompressibleTwoPhaseMixture& mixture,
-    const volScalarField& T,
-    const volScalarField& alpha1
-)
+    runTime.controlDict().get<scalar>("maxAlphaCo")
+);
+
+scalar alphaCoNum = 0.0;
+scalar meanAlphaCoNum = 0.0;
+
+if (mesh.nInternalFaces())
 {
-    const word modelType(dict.lookup("model"));
-
-    Info<< "Selecting phase change model: " << modelType << endl;
-
-    auto* ctorPtr = dictionaryConstructorTable(modelType);
-
-    if (!ctorPtr)
-    {
-        FatalIOErrorInFunction(dict)
-            << "Unknown thermalPhaseChangeModel type '" << modelType << "'"
-            << nl << nl
-            << "Valid types:" << nl
-            << dictionaryConstructorTablePtr_->sortedToc()
-            << exit(FatalIOError);
-    }
-
-    return autoPtr<thermalPhaseChangeModel>
+    scalarField sumPhi
     (
-        ctorPtr(name, dict, mixture, T, alpha1)
+        mixture.nearInterface()().primitiveField()
+       *fvc::surfaceSum(mag(phi + phaseChangePtr->phiStefan()))().primitiveField()
     );
 
+    alphaCoNum = 0.5*gMax(sumPhi/mesh.V().field())*runTime.deltaTValue();
 
+    meanAlphaCoNum =
+        0.5*(gSum(sumPhi)/gSum(mesh.V().field()))*runTime.deltaTValue();
 }
 
+Info<< "Interface Courant Number mean: " << meanAlphaCoNum
+    << " max: " << alphaCoNum << endl;
 
 // ************************************************************************* //

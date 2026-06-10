@@ -2,8 +2,10 @@
   =========                 |
   \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox
    \\    /   O peration     |
-    \\  /    A nd           | Copyright (C) 2016 Alex Rattner
+    \\  /    A nd           | www.openfoam.com
      \\/     M anipulation  |
+-------------------------------------------------------------------------------
+    Copyright (C) 2014 OpenFOAM Foundation
 -------------------------------------------------------------------------------
 License
     This file is part of OpenFOAM.
@@ -23,43 +25,24 @@ License
 
 \*---------------------------------------------------------------------------*/
 
-#include "thermalPhaseChangeModel.H"
+#include "immiscibleIncompressibleThreePhaseMixture.H"
 
-// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
-Foam::autoPtr<Foam::thermalPhaseChangeModel>
-Foam::thermalPhaseChangeModel::New
+// * * * * * * * * * * * * * * * * Constructors  * * * * * * * * * * * * * * //
+
+Foam::immiscibleIncompressibleThreePhaseMixture::
+immiscibleIncompressibleThreePhaseMixture
 (
-    const word& name,
-    const dictionary& dict,
-    const immiscibleIncompressibleTwoPhaseMixture& mixture,
-    const volScalarField& T,
-    const volScalarField& alpha1
+    const volVectorField& U,
+    const surfaceScalarField& phi
 )
-{
-    const word modelType(dict.lookup("model"));
-
-    Info<< "Selecting phase change model: " << modelType << endl;
-
-    auto* ctorPtr = dictionaryConstructorTable(modelType);
-
-    if (!ctorPtr)
-    {
-        FatalIOErrorInFunction(dict)
-            << "Unknown thermalPhaseChangeModel type '" << modelType << "'"
-            << nl << nl
-            << "Valid types:" << nl
-            << dictionaryConstructorTablePtr_->sortedToc()
-            << exit(FatalIOError);
-    }
-
-    return autoPtr<thermalPhaseChangeModel>
+:
+    incompressibleThreePhaseMixture(U, phi),
+    threePhaseInterfaceProperties
     (
-        ctorPtr(name, dict, mixture, T, alpha1)
-    );
-
-
-}
+        static_cast<incompressibleThreePhaseMixture&>(*this)
+    )
+{}
 
 
 // ************************************************************************* //

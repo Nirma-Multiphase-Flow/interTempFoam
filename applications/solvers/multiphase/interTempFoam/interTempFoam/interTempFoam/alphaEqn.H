@@ -103,13 +103,13 @@
     if (ocCoeff > 0)
     {
         phiCN =
-            cnCoeff*(phi)
+            cnCoeff*(phi + phiStefan)
         + (1.0 - cnCoeff)
-        *(phi.oldTime());
+        *(phi.oldTime() + phiStefan.oldTime());
     }
     else
     {
-        phiCN = phi;
+        phiCN = phi + phiStefan;
     }
 
     if (MULESCorr)

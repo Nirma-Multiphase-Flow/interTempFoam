@@ -2,8 +2,10 @@
   =========                 |
   \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox
    \\    /   O peration     |
-    \\  /    A nd           | Copyright (C) 2016 Alex Rattner
+    \\  /    A nd           | www.openfoam.com
      \\/     M anipulation  |
+-------------------------------------------------------------------------------
+    Copyright (C) 2011-2017 OpenFOAM Foundation
 -------------------------------------------------------------------------------
 License
     This file is part of OpenFOAM.
@@ -21,45 +23,33 @@ License
     You should have received a copy of the GNU General Public License
     along with OpenFOAM.  If not, see <http://www.gnu.org/licenses/>.
 
+Global
+    setDeltaT
+
+Description
+    Reset the timestep to maintain a constant maximum courant Number.
+    Reduction of time-step is immediate, but increase is damped to avoid
+    unstable oscillations.
+
 \*---------------------------------------------------------------------------*/
 
-#include "thermalPhaseChangeModel.H"
-
-// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
-
-Foam::autoPtr<Foam::thermalPhaseChangeModel>
-Foam::thermalPhaseChangeModel::New
-(
-    const word& name,
-    const dictionary& dict,
-    const immiscibleIncompressibleTwoPhaseMixture& mixture,
-    const volScalarField& T,
-    const volScalarField& alpha1
-)
+if (adjustTimeStep)
 {
-    const word modelType(dict.lookup("model"));
+    scalar maxDeltaTFact =
+        min(maxCo/(CoNum + SMALL), maxAlphaCo/(alphaCoNum + SMALL));
 
-    Info<< "Selecting phase change model: " << modelType << endl;
+    scalar deltaTFact = min(min(maxDeltaTFact, 1.0 + 0.1*maxDeltaTFact), 1.2);
 
-    auto* ctorPtr = dictionaryConstructorTable(modelType);
-
-    if (!ctorPtr)
-    {
-        FatalIOErrorInFunction(dict)
-            << "Unknown thermalPhaseChangeModel type '" << modelType << "'"
-            << nl << nl
-            << "Valid types:" << nl
-            << dictionaryConstructorTablePtr_->sortedToc()
-            << exit(FatalIOError);
-    }
-
-    return autoPtr<thermalPhaseChangeModel>
+    runTime.setDeltaT
     (
-        ctorPtr(name, dict, mixture, T, alpha1)
+        min
+        (
+            deltaTFact*runTime.deltaTValue(),
+            maxDeltaT
+        )
     );
 
-
+    Info<< "deltaT = " <<  runTime.deltaTValue() << endl;
 }
-
 
 // ************************************************************************* //

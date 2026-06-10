@@ -128,6 +128,12 @@ class HardtWondra
         //- Interface area density |∇α_s|  [1/m]
         volScalarField interfaceArea_;
 
+        //- Interface band mask (1 inside diffuse zone, 0 outside)  [dimensionless]
+        //  Promoted from local in calcQ_pc() so alpha1Gen() can reuse it for
+        //  the redistributed, band-masked, conservation-normalised source without
+        //  duplicated Helmholtz/pos logic.
+        volScalarField interfaceBand_;
+
         //- Interface-normal conductive heat flux  [W/m³] = [W/m²]·[1/m]
         volScalarField qn_;
 
@@ -144,6 +150,18 @@ class HardtWondra
 
         //- Helmholtz spreading length in cell units: λ = n × h_cell
         scalar lambdaSmearCells_;
+
+        //- Separate Helmholtz length for the alpha phase-fraction source [cell units].
+        //  Controls interface width seen by MULES independently of the thermal/Stefan
+        //  smoothing (lambdaSmearCells_).  Smaller = sharper front.
+        //  Typical: 1.0 → ~3-4 cells; 0.5 → ~2 cells.
+        //  Defaults to lambdaSmearCells_ if not specified in the dictionary.
+        scalar lambdaAlphaCells_;
+
+        //- Tighter-Helmholtz-redistributed mdot for the alpha source.
+        //  Computed in calcQ_pc() and cached so alpha1Gen() (called 3× per
+        //  PIMPLE outer iteration) avoids redundant Helmholtz solves.
+        volScalarField mdotAlpha_;
 
         //- Conductivity bias toward liquid side [0,1]; 1.0 = full mixture
         scalar liquidBiasCoeff_;
@@ -234,6 +252,11 @@ public:
 
         //- Return the phase-change volume dilatation rate (Smooth/Helmholtz)
         virtual tmp<volScalarField> PCV() const;
+
+        //- Return sharp, interface-band-localized alpha source for MULES
+        //  (mdotRaw_/rho1). Overrides the base Helmholtz-smoothed source to
+        //  avoid progressive front smearing when phiStefan=0 (equal densities).
+        virtual tmp<volScalarField> alpha1Gen() const override;
 
         //- Return enthalpy correction term  [W/m³]
         virtual tmp<volScalarField> Qcorr()  const override;

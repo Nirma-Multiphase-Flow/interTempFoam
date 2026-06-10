@@ -34,8 +34,7 @@ fvScalarMatrix TEqn
   - fvm::laplacian(kappaf, T)
   + fvm::Sp(Acoeff, T)
  ==
-    Acoeff*Tsat 
- 
+    Acoeff*Tsat
 );
 
 TEqn.relax();
@@ -47,15 +46,15 @@ TEqn.solve();
 // interface cells.
 // -------------------------------------------------------------------------
 
-const scalar TsatValue = Tsat.value();
+//const scalar TsatValue = Tsat.value();
 
-forAll(T, celli)
-{
-    if (alpha1[celli] > 0.75)
-    {
-        T[celli] = TsatValue;   
-    }
-}
+//forAll(T, celli)
+//{
+//    if (alpha1[celli] > 0.99)
+//    {
+//        T[celli] = TsatValue;
+//    }
+//}
 
 T.correctBoundaryConditions();
 

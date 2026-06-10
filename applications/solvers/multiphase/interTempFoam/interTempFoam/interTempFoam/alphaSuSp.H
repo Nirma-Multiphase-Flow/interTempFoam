@@ -28,6 +28,11 @@
 //     Sp/Su handle the residual fraction conversion.
 //   - Mode-agnostic: works for melting, solidification, evaporation, condensation;
 //     assignment follows sign(alpha1Gen), not a mode-specific branch.
+//
+// Sign convention (verified for Sheikh 1D melting case):
+//   psi > 0 in solid (alpha1=alpha.solid >= 0.5), psi < 0 in liquid.
+//   Melting hot cell is liquid (psi<0) → qn < 0 → mdot < 0 → alpha1Gen < 0.
+//   alpha.solid must decrease → Sp < 0 is correct. NO sign flip needed.
 
 tmp<volScalarField> tDivU(phaseChangePtr->PCV());
 tmp<volScalarField> tAlpha1Gen(phaseChangePtr->alpha1Gen());
@@ -78,52 +83,6 @@ forAll(Su, celli)
         // Produced-phase source: explicit, receiving cell has headroom
         Su[celli] = src;
     }
-}
-
-// --- Boundedness-loss compensation -----------------------------------------
-// The redistributed alpha1Gen spreads symmetrically across the diffuse
-// interface. The portion landing on cells already depleted of the consumed
-// phase (alpha.solid -> 0 for a melt sink) cannot be applied: the bounded
-// update Sp*alpha1 -> 0 there, and that mass-conversion credit evaporates.
-// Consequence: APPLIED phase change is only ~0.48x the heat-flux rate,
-// stalling the front at ~0.65x analytical despite the thermal path being
-// correct. This block rescales Su and Sp so the APPLIED integral matches
-// the REQUESTED integral, restoring the analytical front speed.
-// Sign-agnostic => general for melting, solidification, evaporation,
-// condensation and both equal / unequal density configurations.
-{
-    const scalarField& Vc = mesh.V().field();
-
-    // Requested: heat-flux-determined total source
-    const scalar reqInt = gSum(alpha1GenI*Vc);
-
-    // Applied: what Su/Sp actually deliver given the current alpha1 field.
-    // Explicit Su contributes directly; implicit Sp contributes Sp*alpha1.
-    scalar appLoc = 0.0;
-    forAll(Su, celli)
-    {
-        appLoc += (Sp[celli]*alpha1I[celli] + Su[celli])*Vc[celli];
-    }
-    const scalar appInt = returnReduce(appLoc, sumOp<scalar>());
-
-    // Geff >= 1: boost to compensate boundedness loss.
-    // Clamp to [1, 5] — never inverts the source; caps boost when solid scarce.
-    // mag(appInt) > VSMALL guards against the zero-source phase of the run.
-    const scalar Gmax = 5.0;
-    scalar Geff = 1.0;
-    if (mag(appInt) > VSMALL && mag(reqInt) > VSMALL)
-    {
-        Geff = min(max(reqInt/appInt, scalar(1)), Gmax);
-    }
-
-    forAll(Su, celli)
-    {
-        Su[celli] *= Geff;
-        Sp[celli] *= Geff;
-    }
-
-    Info<< "alphaSuSp: Geff=" << Geff
-        << "  reqInt=" << reqInt << "  appInt=" << appInt << endl;
 }
 
 volScalarField::Internal divU

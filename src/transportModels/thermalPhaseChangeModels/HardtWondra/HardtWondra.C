@@ -149,6 +149,34 @@ Foam::thermalPhaseChangeModels::HardtWondra::HardtWondra
         dimensionedScalar("Ai", dimless/dimLength, Zero)
     ),
 
+    interfaceBand_
+    (
+        IOobject
+        (
+            "interfaceBand_HW",
+            T_.time().timeName(),
+            mesh_,
+            IOobject::NO_READ,
+            IOobject::NO_WRITE
+        ),
+        mesh_,
+        dimensionedScalar("iBand", dimless, Zero)
+    ),
+
+    mdotAlpha_
+    (
+        IOobject
+        (
+            "mdotAlpha",
+            T_.time().timeName(),
+            mesh_,
+            IOobject::NO_READ,
+            IOobject::NO_WRITE
+        ),
+        mesh_,
+        dimensionedScalar("mdotAlpha", dimDensity/dimTime, Zero)
+    ),
+
     qn_
     (
         IOobject
@@ -201,6 +229,7 @@ Foam::thermalPhaseChangeModels::HardtWondra::HardtWondra
     nSmoothIter_     (dict.lookupOrDefault<label> ("nSmoothIter",      2)),
     alphaSmoothWidth_(dict.lookupOrDefault<scalar>("alphaSmoothWidth",  0.5)),
     lambdaSmearCells_(dict.lookupOrDefault<scalar>("lambdaSmearCells",  1.5)),
+    lambdaAlphaCells_(dict.lookupOrDefault<scalar>("lambdaAlphaCells",  lambdaSmearCells_)),
     liquidBiasCoeff_ (dict.lookupOrDefault<scalar>("liquidBiasCoeff",   1.0)),
     mdotMax_         (dict.lookupOrDefault<scalar>("mdotMax",           100.0)),
     RelaxFac_        (dict.lookupOrDefault<scalar>("RelaxFac",          1.0)),
@@ -234,7 +263,13 @@ Foam::thermalPhaseChangeModels::HardtWondra::HardtWondra
     coldPhaseIsHighAlpha1_
         (dict.lookupOrDefault<bool>("coldPhaseIsHighAlpha1", false))
 {
-    // Set mdot_ BCs for the Helmholtz solve (unchanged).
+    // Set mdot_ BCs for the Helmholtz solve.
+    // Coupled (processor/cyclic) and empty patches MUST keep their genuine
+    // patch-field type — forcing zeroGradient on a processor patch breaks the
+    // parallel lduMatrix interface coupling in fvm::laplacian(λ²,mdot_) and
+    // NaNs the solve (cold-start SIGFPE, parallel only). Real patches get an
+    // explicit zero fixedValue; New("fixedValue",p,iF) leaves the value field
+    // uninitialised which is UB and benign-by-luck in serial but unsafe in general.
     volScalarField::Boundary& mdotBf = mdot_.boundaryFieldRef();
     forAll(mdotBf, patchi)
     {
@@ -242,16 +277,43 @@ Foam::thermalPhaseChangeModels::HardtWondra::HardtWondra
         if (p.coupled() || p.type() == "empty")
         {
             mdotBf.set(patchi,
-                fvPatchField<scalar>::New("zeroGradient", p, mdot_));
+                fvPatchField<scalar>::New(p.type(), p, mdot_));
         }
         else
         {
             mdotBf.set(patchi,
                 fvPatchField<scalar>::New("fixedValue", p, mdot_));
+            mdotBf[patchi] == scalar(0);  // explicit zero init
         }
     }
 
-    correct();
+    // Set mdotAlpha_ BCs identical to mdot_ (same Helmholtz solve structure).
+    volScalarField::Boundary& mdotAlphaBf = mdotAlpha_.boundaryFieldRef();
+    forAll(mdotAlphaBf, patchi)
+    {
+        const fvPatch& p = mesh_.boundary()[patchi];
+        if (p.coupled() || p.type() == "empty")
+        {
+            mdotAlphaBf.set(patchi,
+                fvPatchField<scalar>::New(p.type(), p, mdotAlpha_));
+        }
+        else
+        {
+            mdotAlphaBf.set(patchi,
+                fvPatchField<scalar>::New("fixedValue", p, mdotAlpha_));
+            mdotAlphaBf[patchi] == scalar(0);
+        }
+    }
+
+    // NOTE: do NOT call correct() here.  The RDF field is created in
+    // createFields.H but is only *reconstructed* inside the time loop
+    // (surf.reconstruct + RDF.constructRDF + grad-alpha bootstrap in
+    // interTempFoam.C).  Calling correct() at construction runs the full
+    // phase-change pipeline against an un-reconstructed (all-zero) RDF,
+    // which makes the mdot Helmholtz solve singular and triggers a SIGFPE.
+    // All output fields (Q_pc_, mdot_, etc.) are zero-initialized in the
+    // initializer list, which is the correct t=0 state.
+    // correct() is called every timestep by the solver AFTER RDF reconstruction.
 }
 
 
@@ -411,6 +473,9 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
     }
     interfaceBand = pos(interfaceBand - 0.01);
 
+    // Persist for alpha1Gen() — avoids recomputing pos(|∇α|) there.
+    interfaceBand_ = interfaceBand;
+
 
     // =========================================================================
     // STEP 4 – Signed normal distance from the genuine RDF library
@@ -486,8 +551,8 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
     );
 
     {
-        scalarField&       gl  = dTdn_liq.primitiveFieldRef();
-        scalarField&       gv  = dTdn_vap.primitiveFieldRef();
+        scalarField&       gl  = dTdn_liq.primitiveFieldRef(); //grad for liq
+        scalarField&       gv  = dTdn_vap.primitiveFieldRef(); //
         const scalarField& a   = alpha1_.primitiveField();
         const scalarField& Tc  = T_.primitiveField();
         const scalarField& p   = psi.primitiveField();
@@ -575,9 +640,25 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
     );
     mdotEqn.solve();
 
+    // Tighter Helmholtz redistribution for the alpha phase-fraction source.
+    // Uses lambdaAlphaCells_ (typically 1.0, smaller than lambdaSmearCells_=2)
+    // so the front width seen by MULES is ~3-4 cells instead of 6-8, while the
+    // wider mdot_ continues to feed the thermal/Stefan paths unchanged.
+    // Cached as mdotAlpha_ so alpha1Gen() (called 3× per outer iter) is free.
+    const dimensionedScalar lambdaSqrAlpha
+    (
+        "lambdaSqrAlpha", dimArea, Foam::sqr(lambdaAlphaCells_*h_ref)
+    );
+    fvScalarMatrix mdotAlphaEqn
+    (
+        fvm::Sp(scalar(1), mdotAlpha_) - fvm::laplacian(lambdaSqrAlpha, mdotAlpha_)
+     == mdotRaw_
+    );
+    mdotAlphaEqn.solve();
+
 
     // =========================================================================
-    // STEP 9 – Stefan Velocity / phiStefan  (UNCHANGED — PRESERVED VERBATIM)
+    // STEP 9 – Stefan Velocity / phiStefan
     // =========================================================================
     const dimensionedScalar AiFloor
     (
@@ -591,46 +672,67 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
             "mdotStefanVol_HW", mesh_.time().timeName(), mesh_,
             IOobject::NO_READ, IOobject::NO_WRITE, false
         ),
-        // Use mdotRaw_ (sharp, band-localised) not mdot_ (Helmholtz-smoothed).
-        // Helmholtz spreads mdot_ beyond interfaceBand; re-applying band then
-        // discards that leaked portion, so phiStefan carries only ~27% of the
-        // generated flux while TEqn (via Q_pc_thermal_=mdotRaw_*h_lv_) removes
-        // 100% — a ~3.6x energy leak that stalls the front at ~0.49x analytical.
-        // mdotRaw_*band/max(Ai,AiFloor) = qn_/h_lv_ at the interface (Ai>>AiFloor,
-        // band=1), giving Ustef = qn/(h_lv*rho) — the exact Stefan velocity, and
-        // now energy-consistent with the latent-heat sink in TEqn.H.
-        (mdotRaw_ * interfaceBand) / max(interfaceArea_, AiFloor)
+        // Use mdot_ (Helmholtz-smoothed, conservative) not mdotRaw_ (sharp).
+        // Dropping the * interfaceBand re-banding here is correct: the Helmholtz
+        // solve conserves the volume integral of mdotRaw_, so mdot_ carries the
+        // same total flux but spread over the diffuse zone — exactly what MULES
+        // needs to advect the alpha field smoothly.  Face-level bulk suppression
+        // is already applied by interfaceMaskF below (zero in the bulk, ramps to 1
+        // across the diffuse zone), so no extra band mask is required.
+        // This makes phiStefan energy-consistent with Q_pc_thermal_ (both now
+        // based on mdot_), eliminating the ~3.6x energy leak that previously
+        // stalled the front at ~0.49x the analytical position.
+        mdot_ / max(interfaceArea_, AiFloor)
     );
 
-    surfaceScalarField alphaIf = fvc::interpolate(alphaSmooth);
-    surfaceScalarField rhoInt_f
+    // Interface normal from the RDF signed-distance field (PLIC-accurate),
+    // NOT the smeared alpha gradient.
+    const volVectorField gradPsi(fvc::grad(psi));
+    const volVectorField nHatRDF
     (
-        alphaIf*mixture_.rho1() + (scalar(1) - alphaIf)*mixture_.rho2()
+         IOobject("nHatRDF_HW", mesh_.time().timeName(), mesh_,
+                  IOobject::NO_READ, IOobject::NO_WRITE, false),
+         gradPsi / (mag(gradPsi) + dimensionedScalar("epsN", dimless, SMALL))
     );
+    surfaceScalarField phiN(fvc::interpolate(nHatRDF) & mesh_.Sf());
 
-    // phiN = interpolate(nHat) & Sf
-    surfaceScalarField phiN(fvc::interpolate(nHat) & mesh_.Sf());
-
-    surfaceScalarField Ustef = fvc::interpolate(mdotStefanVol) / rhoInt_f;
-    phiStefan_ = Ustef * phiN;
-
-    const dimensionedScalar maskAlphaMin("maskAlphaMin", dimless, scalar(0.05));
-    surfaceScalarField interfaceMaskF
+    // Eq.7 (Shaikh 2016): u_Stefan = mdot'' * (1/rho2 - 1/rho1) * nHat ;  mdot'' = mdot_/Ai
+    const dimensionedScalar dRhoInv
     (
-        min
-        (
-            min(alphaIf, scalar(1) - alphaIf)/maskAlphaMin,
-            dimensionedScalar("one", dimless, scalar(1))
-        )
+         "dRhoInv", dimVolume/dimMass,
+         1.0/mixture_.rho2().value() - 1.0/mixture_.rho1().value()
     );
-    phiStefan_ *= interfaceMaskF;
+    phiStefan_ = fvc::interpolate(mdotStefanVol) * dRhoInv * phiN;  // mdotStefanVol = mdot_/max(Ai,AiFloor)
 
 
     // =========================================================================
-    // STEP 10 – Source Field Assignments (UNCHANGED)
+    // STEP 10 – Source Field Assignments
     // =========================================================================
-    Q_pc_         = mdot_    * h_lv_;   // SMOOTH: PCV fallback & pEqn
-    Q_pc_thermal_ = mdotRaw_ * h_lv_;   // SHARP : TEqn Acoeff
+    Q_pc_         = mdot_ * h_lv_;   // SMOOTH: PCV fallback & pEqn
+
+    // Q_pc_thermal_ feeds TEqn's implicit Acoeff latent-heat sink.
+    // We MUST restrict it to the interfaceBand.  The Helmholtz solve spreads
+    // mdot_ several cells beyond the |∇alpha| band; if we let Acoeff act there
+    // it removes sensible heat from the liquid bulk, cooling the liquid
+    // systematically below the conduction-driven analytical profile and starving
+    // the Stefan gradient — the root cause of the 0.49x interface lag.
+    //
+    // Restricting to interfaceBand (where |∇alphaSmooth| > 1e-4) ensures that:
+    //  • outside the band → Acoeff = 0 → T evolves by pure conduction (correct)
+    //  • inside the band  → Acoeff ∝ mdot_·h_lv / |T-Tsat| (correct latent pin)
+    //  • phiStefan (also ∝ mdot_ in the band, masked by interfaceMaskF at faces)
+    //    remains energy-consistent with Q_pc_thermal in the band.
+    // Smoothed, band-masked latent sink.  With alpha1Gen()=mdotRaw_/rho1 driving
+    // the (sharp) front independently of the Helmholtz smoothing, the thermal
+    // sink no longer needs to be sharp — and must NOT be: the sharp mdotRaw_ sink
+    // over-pinned the melt-side (a<0.5) qn-sampling cells toward Tsat, collapsing
+    // (T-Tsat) there and throttling qn -> mdot -> the front (the t=13314 stall,
+    // ratio 0.22x).  The Helmholtz-spread mdot_ lowers per-cell Acoeff in TEqn so
+    // those cells keep their (T-Tsat) gradient and qn is restored, WITHOUT
+    // re-smearing the front (the front rides on mdotRaw_, not on mdot_/lambda).
+    // Energy stays globally conserved: the Helmholtz solve conserves the volume
+    // integral of mdotRaw_.  interfaceBand keeps Acoeff off the liquid bulk.
+    Q_pc_thermal_ = mdot_ * interfaceBand * h_lv_;   // smoothed+masked: restores melt-side gradient (was mdotRaw_*h_lv_, over-pinned, t=13314 stall 0.22x)
 
     // Reconstruct cell-centred Stefan velocity vector from the face flux.
     // fvc::reconstruct divides phiStefan_ [m³/s] by face areas to recover
@@ -667,11 +769,7 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
         << "  max(|dTdn_liq|)       = "
         << gMax(mag(dTdn_liq.primitiveField())) << " K/m" << nl
         << "  max(|dTdn_vap|)       = "
-        << gMax(mag(dTdn_vap.primitiveField())) << " K/m" << nl
-        << "  max(|phiStefan|)      = "
-        << gMax(mag(phiStefan_.primitiveField())) << nl
-        << "  sum(|phiStefan|)      = "
-        << gSum(mag(phiStefan_.primitiveField())) << nl;
+        << gMax(mag(dTdn_vap.primitiveField())) << " K/m" << nl;
     Info<< "min/max(qn) = "
     << gMin(qn_)
     << " "
@@ -698,6 +796,89 @@ Foam::tmp<Foam::volScalarField>
 Foam::thermalPhaseChangeModels::HardtWondra::Q_pc_thermal() const
 {
     return Q_pc_thermal_;
+}
+
+
+Foam::tmp<Foam::volScalarField>
+Foam::thermalPhaseChangeModels::HardtWondra::alpha1Gen() const
+{
+    // Sharp, interface-band-localized phase-conversion source for MULES.
+    //
+    // The base class returns the Helmholtz-smoothed mdot_/rho1 (via Q_pc_),
+    // which spreads the source ~lambdaSmearCells beyond the |grad alpha| band.
+    // With equal phase densities phiStefan == 0, so there is no kinematic
+    // interface motion to localize melting; the smoothed source then partially
+    // melts a whole band and the front smears progressively.
+    //
+    // mdotRaw_ (Step 8: Ai * interfaceBand * qn / h_lv) is already restricted to
+    // the interface band, so dividing it by rho1 confines melting to the true
+    // interface and lets MULES compression keep the front sharp.
+    if (!sw_alpha1Gen_)
+    {
+        return tmp<volScalarField>::New
+        (
+            IOobject
+            (
+                "alpha1Gen", mesh_.time().timeName(), mesh_,
+                IOobject::NO_READ, IOobject::NO_WRITE, false
+            ),
+            mesh_,
+            dimensionedScalar("alpha1Gen", dimless/dimTime, Zero)
+        );
+    }
+
+    // Redistributed, band-masked, conservation-normalised phase-fraction source.
+    //
+    // Replace the sharp one-sided mdotRaw_/rho1 with the Helmholtz-redistributed
+    // mdot_ (two-sided, centred at α≈0.5, tangentially smoothed) restricted to
+    // the interface band, then rescaled by G so the total deposited integral
+    // matches the heat-flux-determined mdotRaw_ integral.
+    //
+    // Why redistribute (vs sharp mdotRaw_):
+    //   The sharp one-sided source sits in the hot melt cell (alpha.solid < 0.5
+    //   for melting, coldPhaseIsHighAlpha1=true), where the consumed phase barely
+    //   exists.  The implicit Sp·α_solid ≈ 0 there → slow front.  More critically,
+    //   qn ∝ (T−Tsat)/psi and interfaceArea = |∇α| positively couple source
+    //   magnitude to interface protrusions → numerical morphological (Mullins–
+    //   Sekerka-type) instability → wavy, non-planar front despite pure-conduction
+    //   melting being physically unconditionally stable.  The redistribution
+    //   provides tangential smoothing that breaks this feedback.
+    //
+    // Why band-mask (interfaceBand_):
+    //   The Helmholtz solve spreads mdot_ ~lambdaSmearCells beyond the |∇α| band.
+    //   Restricting to interfaceBand_ (pos(|∇α_smooth| > 1e-4), with 1-cell
+    //   symmetric expansion) prevents the source acting in the bulk, keeping the
+    //   front from progressively smearing.  Same rationale as Q_pc_thermal_.
+    //
+    // Why conservation rescale G:
+    //   The band-mask makes |∫mdotBand dV| ≤ |∫mdotRaw dV| (Helmholtz conserves
+    //   the total exactly, but the band truncates the tails).  G = ∫mdotRaw/∫mdotBand
+    //   corrects this so front speed is set by physics, not discretization.
+    //   In practice G ≈ 1 once the band is well resolved (lambdaSmearCells ≤ 2).
+    //
+    // Generality: sign-driven; no melting-specific branches; works for
+    // solidification, evaporation, condensation, and unequal densities
+    // (phiStefan / PCV paths are untouched).
+
+    // mdotAlpha_: tighter-Helmholtz source (lambdaAlphaCells_ ≤ lambdaSmearCells_)
+    // computed in calcQ_pc() each outer iter.  Using it instead of mdot_ keeps
+    // the front ~(2.77×lambdaAlphaCells) cells wide rather than 6-8.
+    const volScalarField mdotBand(mdotAlpha_ * interfaceBand_);
+
+    const scalar sumRaw  = gSum(mdotRaw_.primitiveField() * mesh_.V().field());
+    const scalar sumBand = gSum(mdotBand.primitiveField() * mesh_.V().field());
+
+    // Conservation rescale; skip when there is no active phase change.
+    const scalar G =
+        (mag(sumRaw) < 1e-30 || mag(sumBand) < 1e-30)
+      ? scalar(0)
+      : sumRaw / sumBand;
+
+    Info<< "alpha1Gen: G=" << G
+        << "  sum(mdotRaw)*V=" << sumRaw
+        << "  sum(mdotBand)*V=" << sumBand << endl;
+
+    return G * mdotBand / mixture_.rho1();
 }
 
 

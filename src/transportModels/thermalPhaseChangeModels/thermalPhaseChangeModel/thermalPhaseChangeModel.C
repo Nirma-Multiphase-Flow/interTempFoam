@@ -92,7 +92,7 @@ Foam::thermalPhaseChangeModel::PCV() const
 {
     if (sw_PCV_)
     {
-        return Q_pc()/h_lv_
+        return (Q_pc()/h_lv_)
               *( scalar(1)/mixture_.rho2() - scalar(1)/mixture_.rho1() );
     }
 
@@ -119,7 +119,7 @@ Foam::thermalPhaseChangeModel::alpha1Gen() const
 {
     if (sw_alpha1Gen_)
     {
-        return -Q_pc() / (mixture_.rho1() * h_lv_);
+        return Q_pc() / (mixture_.rho1() * h_lv_);
     }
 
     return tmp<volScalarField>::New
