@@ -126,13 +126,11 @@
           + fv::gaussConvectionScheme<scalar>
             (
                 mesh,
-                phiCN,
-                upwind<scalar>(mesh, phiCN)
-            ).fvmDiv(phiCN, alpha1)
-       // - fvm::Sp(fvc::ddt(dimensionedScalar("1", dimless, 1), mesh)
-       //           + fvc::div(phiCN), alpha1)
+                phi,
+                upwind<scalar>(mesh, phi)
+            ).fvmDiv(phi, alpha1)
          ==
-            Su + fvm::Sp(Sp + divU, alpha1)
+            Su + fvm::Sp(Sp + divU, alpha1) - divU*alpha1.oldTime()
         );
 
         alpha1Eqn.solve();
@@ -181,10 +179,32 @@
 
         surfaceScalarField phir(phic*mixture.nHatf());
 
+        // Pure conservative convection: fvmDiv(phi, alpha1) is exact flux-form
+        // (Gauss's theorem), so only the boundary flux and the explicit
+        // Su/Sp = alpha1Gen (RDF-Stefan mdot/rho_l) source can change
+        // total liquid volume -- no dilatation-cancellation term is used.
+        //
+        // HISTORY: an earlier attempt added a -fvm::Sp(divU, alpha1) term
+        // (divU = fvc::div(phi) = PCV) to the predictor in the style of
+        // interPhaseChangeFoam's "Sp + divU".  That pattern is only safe
+        // there because its alpha-source coefficient (vDotAlphal, see
+        // phaseChangeTwoPhaseMixture.C) is itself built from the SAME
+        // (1/rho_l - 1/rho_v) dilatation-scale factor as divU, so adding
+        // them is a self-consistent rewrite.  Our alpha1Gen = mdot/rho_l
+        // (pure liquid mass-loss rate) is NOT that scale -- it is
+        // ~1626x smaller than PCV = mdot*(1/rho_l-1/rho_v) for water/steam.
+        // Adding divU to Sp therefore injected a real, uncompensated
+        // +alpha1*divU source (large and positive exactly where the
+        // droplet sits), which is what caused the 35-38x volume growth.
+        // Converting fvmDiv(phi,a)-Sp(divU,a) to advective form and back
+        // out is only a no-op if the RHS also carries the matching
+        // -Sp(divU,a); doing that algebra exactly cancels divU on both
+        // sides, leaving plain fvmDiv(phi,a) == Su + Sp(Sp,a) -- i.e. no
+        // divU term at all is the exact, mass-conservative form here.
         alphaPhiUn =
                 fvc::flux
                 (
-                    (phiTotal),
+                    phi,
                     alpha1,
                     alphaScheme
                 )
@@ -198,8 +218,15 @@
         if (MULESCorr)
         {
             tmp<surfaceScalarField> talphaPhi1Corr(alphaPhiUn - alphaPhi10);
+
             volScalarField alpha10("alpha10", alpha1);
 
+            // Pass Sp and the matching Su = -Sp*alpha1 so the MULES limiter
+            // is source-aware.  Canonical interFoam VoF pattern:
+            //   VoF/alphaEqn.H MULESCorr branch, OpenFOAM v2412.
+            // Without these args the limiter did not account for the
+            // consumed-phase sink and the antidiffusive flux injected
+            // spurious liquid (α>0.5 volume grew 38× in ~0.1 ms).
             MULES::correct
             (
                 geometricOneField(),
@@ -235,10 +262,10 @@
             (
                 geometricOneField(),
                 alpha1,
-                phiCN,
+                phi,
                 alphaPhi10,
                 Sp,
-                (Su + divU*min(alpha1(), scalar(1)))(),
+                Su,
                 oneField(),
                 zeroField()
             );

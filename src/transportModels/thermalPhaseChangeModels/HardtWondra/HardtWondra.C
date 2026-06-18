@@ -263,18 +263,33 @@ Foam::thermalPhaseChangeModels::HardtWondra::HardtWondra
     coldPhaseIsHighAlpha1_
         (dict.lookupOrDefault<bool>("coldPhaseIsHighAlpha1", false))
 {
-    // Set mdot_ BCs for the Helmholtz solve.
-    // Coupled (processor/cyclic) and empty patches MUST keep their genuine
-    // patch-field type — forcing zeroGradient on a processor patch breaks the
-    // parallel lduMatrix interface coupling in fvm::laplacian(λ²,mdot_) and
-    // NaNs the solve (cold-start SIGFPE, parallel only). Real patches get an
-    // explicit zero fixedValue; New("fixedValue",p,iF) leaves the value field
-    // uninitialised which is UB and benign-by-luck in serial but unsafe in general.
+    // Set mdot_ / mdotAlpha_ BCs for the Helmholtz solve.
+    //
+    // Constraint patches MUST keep their genuine fvPatchField type:
+    //   coupled        – parallel lduMatrix interface; forcing fixedValue NaNs the solve.
+    //   empty          – 2D/axis degenerate patch; no contribution to the solve.
+    //   wedge          – axisymmetric azimuthal transform applied inside
+    //                    fvm::laplacian(λ²,mdot_); fixedValue=0 pins mdot to zero on
+    //                    both wedge faces (which bound EVERY cell in a 1-cell-thick wedge),
+    //                    corrupting the entire mdot_ field → checkerboard Q_pc → T detonation.
+    //   symmetry /     – correct BC is zero-normal-gradient; fixedValue=0 suppresses the
+    //   symmetryPlane    source where the interface crosses the axis/equatorial plane.
+    //
+    // All other physical patches (walls) get explicit fixedValue=0 (zero-flux BC).
+    const auto keepGenuineType = [](const fvPatch& p) -> bool
+    {
+        return p.coupled()
+            || p.type() == "empty"
+            || p.type() == "wedge"
+            || p.type() == "symmetry"
+            || p.type() == "symmetryPlane";
+    };
+
     volScalarField::Boundary& mdotBf = mdot_.boundaryFieldRef();
     forAll(mdotBf, patchi)
     {
         const fvPatch& p = mesh_.boundary()[patchi];
-        if (p.coupled() || p.type() == "empty")
+        if (keepGenuineType(p))
         {
             mdotBf.set(patchi,
                 fvPatchField<scalar>::New(p.type(), p, mdot_));
@@ -283,7 +298,7 @@ Foam::thermalPhaseChangeModels::HardtWondra::HardtWondra
         {
             mdotBf.set(patchi,
                 fvPatchField<scalar>::New("fixedValue", p, mdot_));
-            mdotBf[patchi] == scalar(0);  // explicit zero init
+            mdotBf[patchi] == scalar(0);
         }
     }
 
@@ -292,7 +307,7 @@ Foam::thermalPhaseChangeModels::HardtWondra::HardtWondra
     forAll(mdotAlphaBf, patchi)
     {
         const fvPatch& p = mesh_.boundary()[patchi];
-        if (p.coupled() || p.type() == "empty")
+        if (keepGenuineType(p))
         {
             mdotAlphaBf.set(patchi,
                 fvPatchField<scalar>::New(p.type(), p, mdotAlpha_));
@@ -419,6 +434,25 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
         dimensionedVector("zero", gradAlpha.dimensions(), Zero),
         "zeroGradient"
     );
+    // Fix constraint patches for the vector Helmholtz solve: wedge patches require
+    // wedgeFvPatchVectorField for the azimuthal transform inside fvm::laplacian(λ²,
+    // gradAlphaSmooth); symmetry/symmetryPlane need zero normal component (not zeroGradient).
+    // Coupled (processor) patches also need their genuine type for parallel coupling.
+    {
+        volVectorField::Boundary& bf = gradAlphaSmooth.boundaryFieldRef();
+        forAll(bf, patchi)
+        {
+            const fvPatch& p = mesh_.boundary()[patchi];
+            if (p.coupled()
+             || p.type() == "wedge"
+             || p.type() == "symmetry"
+             || p.type() == "symmetryPlane")
+            {
+                bf.set(patchi,
+                    fvPatchField<vector>::New(p.type(), p, gradAlphaSmooth));
+            }
+        }
+    }
     gradAlphaSmooth.primitiveFieldRef() = gradAlpha.primitiveField();
     gradAlphaSmooth.correctBoundaryConditions();
 
@@ -780,6 +814,18 @@ void Foam::thermalPhaseChangeModels::HardtWondra::calcQ_pc()
     << " "
     << gMax(mdotRaw_)
     << endl;
+
+    // DIAGNOSTIC Stage 0 — remove after PCV sign is confirmed and fixed
+    {
+        const scalar sumDivU = gSum
+        (
+            mdot_.primitiveField()
+          * (1.0/mixture_.rho2().value() - 1.0/mixture_.rho1().value())
+          * mesh_.V().field()
+        );
+        Info<< "  Sum(imposed divU)*dV  = " << sumDivU
+            << " m3/s  (must be > 0 during evaporation)" << nl;
+    }
 }
 
 
@@ -923,16 +969,31 @@ Foam::thermalPhaseChangeModels::HardtWondra::kappaf() const
 Foam::tmp<Foam::volScalarField>
 Foam::thermalPhaseChangeModels::HardtWondra::PCV() const
 {
-    // UNCHANGED: smeared mdot_ keeps pressure-velocity coupling stable.
-    return tmp<volScalarField>::New
-    (
-        IOobject
+    // Volumetric dilatation source for the pressure equation (pEqn).
+    // Sign convention: PCV > 0 during evaporation (net volume expansion).
+    //   PCV = -mdot_ * (1/rho_vap - 1/rho_liq)
+    // mdot_ < 0 during evaporation, (1/rhoV - 1/rhoL) > 0 → PCV > 0. ✓
+    //
+    // NOTE: alphaSuSp uses fvc::div(phiCN) — not PCV() — as divU, which gives
+    // the exact discrete compressibility cancellation.  PCV() is only used in
+    // pEqn to drive the correct global volume expansion.
+    return
+        tmp<volScalarField>
         (
-            "PCV_HW", mesh_.time().timeName(), mesh_,
-            IOobject::NO_READ, IOobject::NO_WRITE, false
-        ),
-        mdot_ * (1.0/mixture_.rho2() - 1.0/mixture_.rho1())
-    );
+            new volScalarField
+            (
+                IOobject
+                (
+                    "PCV", mesh_.time().timeName(), mesh_,
+                    IOobject::NO_READ, IOobject::NO_WRITE, false
+                ),
+               -mdot_
+               *(
+                    dimensionedScalar("invRhoV", dimless/dimDensity, 1.0/mixture_.rho2().value())
+                  - dimensionedScalar("invRhoL", dimless/dimDensity, 1.0/mixture_.rho1().value())
+                )
+            )
+        );
 }
 
 

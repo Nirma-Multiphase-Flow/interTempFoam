@@ -29,7 +29,25 @@
 //   - Mode-agnostic: works for melting, solidification, evaporation, condensation;
 //     assignment follows sign(alpha1Gen), not a mode-specific branch.
 
-tmp<volScalarField> tDivU(phaseChangePtr->PCV());
+// divU is retained in the predictor's implicit matrix (fvm::Sp(Sp+divU,.))
+// purely for numerical regularization -- it matches the canonical interFoam
+// VoF predictor structure and keeps the U-p-alpha coupling well-conditioned
+// for this solver's extreme density ratio (rho_l/rho_v ~ 1626).  Its bias
+// (divU = PCV is ~1626x larger in magnitude than alpha1Gen = mdot/rho_l) is
+// removed via deferred correction in alphaEqn.H: the explicit RHS subtracts
+// divU*alpha1.oldTime() to cancel the implicit divU*alpha1 contribution, so
+// the net source scales with divU*(alpha1-alpha1.oldTime()) [O(dt), small]
+// instead of divU*alpha1 [O(1), the ~35-38x growth bug from an earlier
+// attempt that added divU with no compensation at all]. A second earlier
+// attempt removed divU entirely (pure Sp, no regularization) -- that is
+// exactly mass-conservative in continuous form but destabilized the
+// U-p-alpha coupling from the very first timestep (spurious 5-15 m/s
+// velocities), sweeping the droplet away via convection. Deferred
+// correction keeps both properties: implicit divU for stability, near-zero
+// net bias for accuracy.
+tmp<volScalarField> tDivU(fvc::div(phi));
+const volScalarField& divU = tDivU();
+
 tmp<volScalarField> tAlpha1Gen(phaseChangePtr->alpha1Gen());
 
 const scalarField& alpha1GenI = tAlpha1Gen().primitiveField();
@@ -106,10 +124,12 @@ forAll(Su, celli)
     }
     const scalar appInt = returnReduce(appLoc, sumOp<scalar>());
 
-    // Geff >= 1: boost to compensate boundedness loss.
-    // Clamp to [1, 5] — never inverts the source; caps boost when solid scarce.
-    // mag(appInt) > VSMALL guards against the zero-source phase of the run.
-    const scalar Gmax = 5.0;
+    // Geff >= 1: boost to compensate MULES boundedness loss.
+    // Clamp to [1, 2] — never inverts the source; caps boost so numerical noise
+    // in reqInt/appInt (observed as high as 40x ratio) is not amplified catastrophically.
+    // Gmax lowered 5→2: sufficient for the Stefan-validated planar front (Geff ≈ 1–1.5
+    // in practice) while preventing ×5 amplification of near-zero noise sources.
+    const scalar Gmax = 2.0;
     scalar Geff = 1.0;
     if (mag(appInt) > VSMALL && mag(reqInt) > VSMALL)
     {
@@ -126,17 +146,3 @@ forAll(Su, celli)
         << "  reqInt=" << reqInt << "  appInt=" << appInt << endl;
 }
 
-volScalarField::Internal divU
-(
-    IOobject
-    (
-        "divU",
-        mesh.time().timeName(),
-        mesh,
-        IOobject::NO_READ,
-        IOobject::NO_WRITE
-    ),
-    mesh,
-    dimless/dimTime,
-    tDivU().primitiveField()
-);

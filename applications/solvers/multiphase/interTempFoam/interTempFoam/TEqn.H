@@ -29,8 +29,9 @@ const volScalarField Acoeff
 // under-melts, "degraded") or, alone, gives the positive-feedback runaway.
 fvScalarMatrix TEqn
 (
-    rhoCp*fvm::ddt(T)
+    fvm::ddt(rhoCp,T)
   + fvm::div(rhoCpPhi, T)
+  - fvm::Sp(fvc::ddt(rhoCp) + fvc::div(rhoCpPhi), T)   // boundedness compensation
   - fvm::laplacian(kappaf, T)
   + fvm::Sp(Acoeff, T)
  ==
@@ -47,17 +48,17 @@ TEqn.solve();
 // interface cells.
 // -------------------------------------------------------------------------
 
-const scalar TsatValue = Tsat.value();
+//const scalar TsatValue = Tsat.value();
 
-forAll(T, celli)
-{
-    if (alpha1[celli] > 0.75)
-    {
-        T[celli] = TsatValue;   
-    }
-}
+//forAll(T, celli)
+//{
+//    if (alpha1[celli] > 0.75)
+//    {
+        //T[celli] = TsatValue;   
+    //}
+//}
 
-T.correctBoundaryConditions();
+//T.correctBoundaryConditions();
 
 T.correctBoundaryConditions();
 
