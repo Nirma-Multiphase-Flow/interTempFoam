@@ -1,0 +1,7 @@
+Make/linux*/
+lnInclude/
+*.o
+*.dep
+__pycache__/
+missfont.log
+*:Zone.Identifier

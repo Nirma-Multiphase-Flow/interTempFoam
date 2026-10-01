@@ -40,10 +40,7 @@ Description
 
 #include "fvCFD.H"
 #include "dynamicFvMesh.H"
-#include "CMULES.H"
-#include "EulerDdtScheme.H"
 #include "localEulerDdtScheme.H"
-#include "CrankNicolsonDdtScheme.H"
 #include "subCycle.H"
 #include "immiscibleIncompressibleTwoPhaseMixture.H"
 #include "incompressibleInterPhaseTransportModel.H"
@@ -56,6 +53,8 @@ Description
 #include "reconstructionSchemes.H"
 #include "reconstructedDistanceFunction.H"
 #include "zoneDistribute.H"
+#include "isoAdvection.H"
+#include "interfaceCurvatureITF.H"
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
@@ -78,15 +77,21 @@ int main(int argc, char *argv[])
     #include "initContinuityErrs.H"
     #include "createDyMControls.H"
     #include "createFields.H"
-    #include "createAlphaFluxes.H"
+
+    if (LTS)
+    {
+        FatalErrorInFunction
+            << "Local time stepping (localEuler) is not supported:"
+            << " isoAdvector and the phase-change source need a uniform"
+            << " time step. Use ddtSchemes { default Euler; }."
+            << exit(FatalError);
+    }
+
     #include "initCorrectPhi.H"
     #include "createUfIfPresent.H"
 
-    if (!LTS)
-    {
-        #include "CourantNo.H"
-        #include "setInitialDeltaT.H"
-    }
+    #include "CourantNo.H"
+    #include "setInitialDeltaT.H"
 
     // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
     Info<< "\nStarting time loop\n" << endl;
@@ -95,15 +100,24 @@ int main(int argc, char *argv[])
     {
         #include "readDyMControls.H"
 
-        if (LTS)
+        #include "CourantNo.H"
+        #include "alphaCourantNo.H"
+        #include "setDeltaT.H"
+
+        // Explicit surface tension is unstable beyond the capillary limit
+        // (V2 at dt = 36 s: 15000x over it, round-off grew into a 2D mode)
+        if
+        (
+            !adjustTimeStep
+         && runTime.deltaTValue() > interface.capillaryDeltaT()
+         && runTime.timeIndex() < 1
+        )
         {
-            #include "setRDeltaT.H"
-        }
-        else
-        {
-            #include "CourantNo.H"
-            #include "alphaCourantNo.H"
-            #include "setDeltaT.H"
+            WarningInFunction
+                << "fixed deltaT " << runTime.deltaTValue()
+                << " exceeds the capillary time-step limit "
+                << interface.capillaryDeltaT()
+                << ": explicit surface tension is unstable." << endl;
         }
 
         ++runTime;
@@ -119,13 +133,6 @@ int main(int argc, char *argv[])
 
                 if (mesh.changing())
                 {
-                    // Do not apply previous time-step mesh compression flux
-                    // if the mesh topology changed
-                    if (mesh.topoChanging())
-                    {
-                        talphaPhi1Corr0.clear();
-                    }
-
                     gh = (g & mesh.C()) - ghRef;
                     ghf = (g & mesh.Cf()) - ghRef;
 
@@ -155,39 +162,19 @@ int main(int argc, char *argv[])
             #include "alphaControls.H"
             #include "alphaEqnSubCycle.H"
 
-            surf.reconstruct();
+            // PLIC of the advected (new) alpha; advect() reconstructed the
+            // start-of-step alpha. Then mixture properties (and the stock
+            // curvature used by curvatureModel gradAlpha), then the interface
+            // geometry, which also marks the RDF band for the legacy RDF.
+            advector.surf().reconstruct();
+            mixture.correct();
+            interface.correct(advector.surf(), RDF);
 
-            // Diagnostic — kept for monitoring, NOT passed to constructRDF
-            {
-                volScalarField magGradAlpha(mag(fvc::grad(alpha1)));
-                scalar gMaxAlpha = gMax(magGradAlpha);
-                Info<< "gMax(|grad(alpha1)|) = " << gMaxAlpha << endl;
-                label nInterface = 0;
-                forAll(magGradAlpha, celli)
-                    if (magGradAlpha[celli] > 1e-3*gMaxAlpha) ++nInterface;
-                Info<< "interfaceMask cells = "
-                    << returnReduce(nInterface, sumOp<label>()) << endl;
-            }
-
-            
-            const scalar alphaTolRDF = 1e-4;
-            {
-                boolList filteredInterfaceCell(mesh.nCells(), false);
-                forAll(alpha1, celli)
-                {
-                    if (   alpha1[celli] > alphaTolRDF
-                        && alpha1[celli] < scalar(1) - alphaTolRDF)
-                    {
-                        filteredInterfaceCell[celli] = true;
-                    }
-                }
-                RDF.markCellsNearSurf(filteredInterfaceCell, 2);
-            }
             RDF.constructRDF
             (
                 RDF.nextToInterface(),
-                surf.centre(),
-                surf.normal(),
+                advector.surf().centre(),
+                advector.surf().normal(),
                 exchangeFields,
                 true
             );
@@ -237,14 +224,6 @@ int main(int argc, char *argv[])
                 phaseChangePtr->correct();
             }
 
-            phiTotal =
-                phi
-              + (coldPhaseIsHighAlpha1 ? scalar(-1) : scalar(1))
-              * phaseChangePtr->phiStefan();
-
-            
-            mixture.correct();
-
 
             if (pimple.frozenFlow())
             {
@@ -272,11 +251,21 @@ int main(int argc, char *argv[])
 
             #include "TEqn.H"
 
+            // Sharp models: interfacial mass transfer from the converged
+            // temperature, used by the next time step
+            if (pimple.finalIter())
+            {
+                phaseChangePtr->correctAfterT();
+            }
+
             if (pimple.turbCorr())
             {
                 turbulence->correct();
             }
         }
+
+        Info<< "Total mass sum(rho V) = "
+            << gSum(rho.primitiveField()*mesh.V()) << " kg" << endl;
 
         runTime.write();
 

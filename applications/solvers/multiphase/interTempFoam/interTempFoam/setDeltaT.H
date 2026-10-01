@@ -40,12 +40,23 @@ if (adjustTimeStep)
 
     scalar deltaTFact = min(min(maxDeltaTFact, 1.0 + 0.1*maxDeltaTFact), 1.2);
 
+    // Capillary (Brackbill-Kothe-Zemach) limit: dt <= maxCapillaryNum*dt_c
+    const scalar maxCapillaryNum =
+        runTime.controlDict().getOrDefault<scalar>("maxCapillaryNum", 1);
+
+    // Phase-change limit: dt <= maxPhaseChangeCo*h/max(|mdot''|/rho1)
+    const scalar maxPhaseChangeCo =
+        runTime.controlDict().getOrDefault<scalar>("maxPhaseChangeCo", 0.25);
+    const scalar uPC = phaseChangePtr->maxInterfaceSpeed();
+    const scalar dtPC =
+        uPC > SMALL ? maxPhaseChangeCo*gMin(interface.cellSize())/uPC : GREAT;
+
     runTime.setDeltaT
     (
         min
         (
-            deltaTFact*runTime.deltaTValue(),
-            maxDeltaT
+            min(deltaTFact*runTime.deltaTValue(), maxDeltaT),
+            min(maxCapillaryNum*interface.capillaryDeltaT(), dtPC)
         )
     );
 

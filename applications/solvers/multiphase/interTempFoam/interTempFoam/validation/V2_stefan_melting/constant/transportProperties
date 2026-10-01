@@ -1,0 +1,49 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  v2412                                 |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      transportProperties;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+phases (solid liquid);
+
+solid
+{
+    transportModel Newtonian;
+
+    nu      1;
+    rho     750;
+
+    cp      2400;
+    Pr      85.7;
+}
+
+liquid
+{
+    transportModel Newtonian;
+
+    nu      1e-5;
+    rho     750;
+
+    cp      2400;
+    Pr      85.7;
+}
+
+// sigma = 0: the one-phase Neumann melting problem has no surface tension
+// (solid/melt front, solid modelled as nu = 1 pseudo-fluid), and the fixed
+// dt = 36 s is 15000x over the capillary limit sqrt(rho h^3/(2 pi sigma))
+// = 2.4 ms for the former sigma = 0.03, which made the planar front unstable
+// (see docs/validation/LOG.md, Gate 4).
+sigma sigma [1 0 -2 0 0 0 0] 0;
+
+curvatureModel  heightFunction;
+
+// ************************************************************************* //

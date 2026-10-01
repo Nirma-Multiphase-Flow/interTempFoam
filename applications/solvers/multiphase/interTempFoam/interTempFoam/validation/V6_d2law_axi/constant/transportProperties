@@ -1,0 +1,43 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+  =========                 |
+  \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox
+   \\    /   O peration     | Version:  v2412
+    \\  /    A nd           | Website:  www.openfoam.com
+     \\/     M anipulation  |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      transportProperties;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+// V6 d2-law droplet: water/vapour properties of Tanguy et al. (2014)
+// JCP 264:1-22 (as in V5), surface tension of water at 373.15 K from IAPWS
+// R1-76(2014): 0.05891 N/m. nu = mu/rho; Pr = mu cp/k (Pr only enters
+// the base-class default conductivity, not used by the HardtWondra model).
+phases (water vapour);
+
+water
+{
+    transportModel  Newtonian;
+    nu              2.943633e-07;   // mu 2.82e-4 / rho 958
+    rho             958;
+    cp              4216;
+    Pr              1.9815;         // 2.82e-4*4216/0.6
+}
+
+vapour
+{
+    transportModel  Newtonian;
+    nu              2.084746e-06;   // mu 1.23e-6 / rho 0.59
+    rho             0.59;
+    cp              2034;
+    Pr              0.096225;       // 1.23e-6*2034/0.026
+}
+
+sigma           0.05891;            // IAPWS R1-76, 373.15 K
+
+curvatureModel  heightFunction;

@@ -40,35 +40,44 @@ volScalarField& alpha2(mixture.alpha2());
 
 
 // -----------------------------------------------------------------
-// geometricVoF reconstruction infrastructure
+// Geometric VoF: one PLIC reconstruction per step, owned by isoAdvection
+// (settings in the alpha solver dictionary of system/fvSolution).
 // -----------------------------------------------------------------
 
-IOdictionary reconDict
-(
-    IOobject
-    (
-        "reconstructionDict",
-        runTime.system(),
-        mesh,
-        IOobject::MUST_READ,
-        IOobject::NO_WRITE
-    )
-);
-
-autoPtr<reconstructionSchemes> surfPtr
-(
-    reconstructionSchemes::New
-    (
-        alpha1,
-        phi,
-        U,
-        reconDict
-    )
-);
-
-reconstructionSchemes& surf = surfPtr();
-
+// Must be constructed BEFORE the advector: plicRDF owns an internal
+// reconstructedDistanceFunction also named "RDF"; the solver's RDF must win
+// the registry name because the legacy phase-change model looks it up.
 reconstructedDistanceFunction RDF(mesh);
+
+// Total advecting flux/velocity of the interface, u_t = u + u_PC (Gada &
+// Sharma 2009 Eq. 13; Shaikh et al. 2016 Eq. 8). isoAdvection keeps
+// references to these two fields; alphaEqn.H refreshes them before advect().
+// phiPC is the phase-change part of the flux (kept for the interface Courant
+// number and the rhoPhi correction).
+surfaceScalarField phiT
+(
+    IOobject("phiT", runTime.timeName(), mesh, IOobject::NO_READ, IOobject::NO_WRITE),
+    phi
+);
+
+volVectorField UT
+(
+    IOobject("UT", runTime.timeName(), mesh, IOobject::NO_READ, IOobject::NO_WRITE),
+    U
+);
+
+surfaceScalarField phiPC
+(
+    IOobject("phiPC", runTime.timeName(), mesh, IOobject::NO_READ, IOobject::NO_WRITE),
+    mesh,
+    dimensionedScalar(phi.dimensions(), Zero)
+);
+
+isoAdvection advector(alpha1, phiT, UT);
+
+// Interface geometry (phase-signed distance psiRDF, curvature, CSF force);
+// curvatureModel gradAlpha | RDF in transportProperties
+interfaceCurvatureITF interface(mixture, alpha1);
 
 zoneDistribute& exchangeFields =
     zoneDistribute::New(mesh);
@@ -88,9 +97,6 @@ volScalarField T
     mesh
 );
 
-const dimensionedScalar& cp1 = mixture.cp1();
-const dimensionedScalar& cp2 = mixture.cp2();
-
 const dimensionedScalar& rho1 = mixture.rho1();
 const dimensionedScalar& rho2 = mixture.rho2();
 
@@ -98,8 +104,7 @@ const dimensionedScalar& rho2 = mixture.rho2();
 const word pcDictName("phaseChangeProperties");
 autoPtr<thermalPhaseChangeModel> phaseChangePtr;
 
-// Kept at outer scope so TEqn.H can read flags (e.g. coldPhaseIsHighAlpha1)
-// without a registry lookup that would fail after this block exits.
+// Kept at outer scope: the model holds a reference to this dictionary.
 autoPtr<IOdictionary> pcDictPtr;
 
 if (mesh.time().db().found(pcDictName) || isFile(mesh.time().constant()/pcDictName))
@@ -149,18 +154,31 @@ else
     );
 }
 
-surfaceScalarField phiTotal
+const dimensionedScalar& cp1 = phaseChangePtr->cp1();
+const dimensionedScalar& cp2 = phaseChangePtr->cp2();
+
+// Phase-change treatment in the alpha equation (alpha1 dict in fvSolution):
+//   phaseChangeAdvection velocity;  interface moved by u_t = u + u_PC,
+//                                   u_PC = mdot'' n_RDF/rho1 (default), or
+//                       source;     explicit volumetric source alpha1Gen
+const word pcAdvection
 (
-    IOobject
+    mesh.solverDict(alpha1.name()).getOrDefault<word>
     (
-        "phiTotal",
-        runTime.timeName(),
-        mesh,
-        IOobject::NO_READ,
-        IOobject::NO_WRITE
-    ),
-    phi
+        "phaseChangeAdvection",
+        "velocity"
+    )
 );
+const bool pcVelocity(pcAdvection == "velocity");
+
+if (!pcVelocity && pcAdvection != "source")
+{
+    FatalErrorInFunction
+        << "phaseChangeAdvection '" << pcAdvection
+        << "' unknown; use velocity or source" << exit(FatalError);
+}
+
+Info<< "Alpha phase change: " << pcAdvection << nl << endl;
 
 // Need to store rho for ddt(rho, U)
 volScalarField rho
@@ -287,16 +305,6 @@ if (p_rgh.needReference())
 }
 
 
-// Read cold-phase flag for TEqn hot-floor gate.
-// true  → melting:      solid = alpha1=1 = cold phase
-// false → evaporation:  vapor = alpha1=0 = cold phase
-// REPLACE the entire coldPhaseIsHighAlpha1 block with:
-const bool coldPhaseIsHighAlpha1 =
-(
-    pcDictPtr.valid()
-    ? pcDictPtr->lookupOrDefault<bool>("coldPhaseIsHighAlpha1", false)
-    : false
-);
 
 mesh.setFluxRequired(p_rgh.name());
 mesh.setFluxRequired(alpha1.name());

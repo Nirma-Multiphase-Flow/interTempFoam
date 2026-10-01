@@ -1,0 +1,207 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  v2412                                 |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      fvSolution;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+solvers
+{
+    "alpha.solid.*"
+    {
+        // isoAdvector (geometric VoF) settings. The Jun-2026 validated run used
+        // MULES; the solver has since switched to isoAdvector, which reads
+        // these keys (verified against v2412 isoAdvection.C / plicRDF.C).
+        reconstructionScheme plicRDF;
+        plicRDFCoeffs
+        {
+            tol         1e-6;
+            relTol      0.1;
+            iterations  5;
+            interpolateNormal true;
+        }
+        nAlphaBounds    3;
+        snapTol         1e-12;
+        clip            true;
+
+        nAlphaCorr      1;
+        nAlphaSubCycles 1;
+        cAlpha          1;     // required by interfaceProperties ctor, unused by isoAdvector
+
+        solver          smoothSolver;
+        smoother        symGaussSeidel;
+        tolerance       1e-8;
+        relTol          0;
+    }
+
+    "pcorr.*"
+    {
+        solver          PCG;
+        preconditioner  DIC;
+        tolerance       1e-5;
+        relTol          0;
+    }
+
+
+    p_rgh
+    {
+        solver          GAMG;
+        smoother        DICGaussSeidel;
+        tolerance       1e-07;
+        relTol          0.05;
+        nPreSweeps      0;
+        nPostSweeps     2;
+        cacheAgglomeration true;
+        nCellsInCoarsestLevel 10;
+        agglomerator    faceAreaPair;
+        mergeLevels     1;
+    }
+
+    p_rghFinal
+    {
+        $p_rgh;
+        relTol          0;
+    }
+
+
+    U
+    {
+        solver          smoothSolver;
+        smoother        symGaussSeidel;
+        tolerance       1e-06;
+        relTol          0;
+    }
+
+    
+    T
+    {
+        solver          GAMG;
+        tolerance       1e-8;
+        relTol          0;
+
+        smoother        DILUGaussSeidel;
+
+        nPreSweeps      0;
+        nPostSweeps     2;
+
+        cacheAgglomeration true;
+        nCellsInCoarsestLevel 20;
+        agglomerator    faceAreaPair;
+        mergeLevels     1;
+    }
+
+    TFinal
+    {
+        $T;
+        relTol          0;
+    }
+
+    mdot
+    {
+        solver          GAMG;
+        smoother        GaussSeidel;
+        tolerance       1e-8;
+        relTol          0;
+        nPreSweeps      0;
+        nPostSweeps     2;
+        cacheAgglomeration true;
+        nCellsInCoarsestLevel 10;
+        agglomerator    faceAreaPair;
+        mergeLevels     1;
+    }
+
+    mdotFinal
+    {
+        $mdot;
+        relTol          0;
+    }
+
+    mdotAlpha
+    {
+        solver          GAMG;
+        smoother        GaussSeidel;
+        tolerance       1e-8;
+        relTol          0;
+        nPreSweeps      0;
+        nPostSweeps     2;
+        cacheAgglomeration true;
+        nCellsInCoarsestLevel 10;
+        agglomerator    faceAreaPair;
+        mergeLevels     1;
+    }
+
+    mdotAlphaFinal
+    {
+        $mdotAlpha;
+        relTol          0;
+    }
+
+    Phi
+    {
+        solver          PCG;
+        preconditioner  DIC;
+        tolerance       1e-8;
+        relTol          0;
+    }
+
+    nHatSmooth_HW
+    {
+            solver          smoothSolver;
+            smoother        symGaussSeidel;
+            tolerance       1e-8;
+            relTol          0;
+    }
+
+    nHatSmooth_HWFinal
+    {
+        $nHatSmooth_HW;
+        relTol          0;
+    }
+    "interfaceProperties:Ksmooth.*"
+    {
+        solver          smoothSolver;
+        smoother        symGaussSeidel;
+        tolerance       1e-8;
+        relTol          0;
+    }
+
+}
+
+potentialFlow
+{
+    PhiRefCell 0;
+    PhiRefValue 0;
+}
+
+PIMPLE
+{
+    momentumPredictor   no;
+    nOuterCorrectors    2;
+    nCorrectors         3;
+    nNonOrthogonalCorrectors 0;
+    correctPhi        yes;
+
+    pRefCell       0;
+    pRefValue      0;
+}
+
+
+relaxationFactors
+{
+    equations
+    {
+        ".*" 1;
+        T 1;    }
+}
+
+
+// ************************************************************************* //

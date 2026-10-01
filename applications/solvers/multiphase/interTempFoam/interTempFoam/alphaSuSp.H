@@ -1,148 +1,120 @@
-// Phase-change sources for MULES — bounded implicit-sink / explicit-source split
-// [1/s] = volumetric rate [kg/m³/s] / density [kg/m³]
+// Phase-change source of the alpha equation (phaseChangeAdvection source),
+// passed to isoAdvector as an explicit Su [1/s] (Sp = 0). Su and Sp are
+// declared in alphaEqn.H.
 //
-// Sign convention (verified against Sheikh 1D melting, general for all modes):
-//   alpha1Gen < 0  →  phase-1 is consumed  (melting: solid decreases)
-//   alpha1Gen > 0  →  phase-1 is produced  (solidification: solid increases)
+// S = phaseChangePtr->alpha1Gen() [1/s]: < 0 consumes phase 1, > 0 produces it.
 //
-// Boundedness (THE FIX):
-//   Previously alpha1Gen was applied as pure explicit Su with Sp=0.  In cells where
-//   alpha1 ≈ 0 (hot-melt side) the predictor drove alpha.solid negative and
-//   alpha1.max(0) discarded ~99% of the intended sink.  Fix: move the consumed-phase
-//   sink into the implicit Sp channel so the contribution scales as Sp×alpha1 → 0
-//   as alpha1 → 0, preventing the negative excursion entirely.
+// Budget: in one step a cell can give at most the phase-1 volume it holds
+// (alpha V) and take at most the room it has ((1 - alpha) V). The implicit
+// sink Sp = S/max(alpha, floor) used before delivered only 45-60% of the
+// requested sink on V2 (dt = 36 s: ~0.6 cell volumes per step), so the
+// latent heat removed by the temperature equation melted less phase 1 than
+// it paid for. Here the excess of a cell is passed, over up to nPass sweeps,
+// to the face neighbour best aligned with the interface normal (grad(alpha1)
+// for sinks, -grad(alpha1) for sources; pure cells inherit the direction of
+// their donor), so a planar front stays planar; what cannot be placed
+// (processor boundaries, no neighbour) is logged.
 //
-//   Consumed-phase (alpha1Gen < 0):
-//     Sp = alpha1Gen / max(alpha1, alphaFloor)   [1/s, negative]
-//     fvm::Sp(Sp, alpha1) → rate ∝ alpha1, vanishes as cell empties, no clip.
-//
-//   Produced-phase (alpha1Gen > 0):
-//     Su = alpha1Gen   [1/s, explicit source]
-//     Receiving cell has alpha1 ≈ 0, so it has headroom; no clip occurs.
-//
-//   alphaFloor = 0.01 caps |Sp| ≤ 100×|alpha1Gen|, preventing stiffness.
-//
-// Generality:
-//   - Equal density (phiStefan=0, PCV=0): all interface motion rides on Sp/Su.
-//   - Unequal density: phiStefan advection + PCV dilatation paths are unchanged;
-//     Sp/Su handle the residual fraction conversion.
-//   - Mode-agnostic: works for melting, solidification, evaporation, condensation;
-//     assignment follows sign(alpha1Gen), not a mode-specific branch.
-
-// divU is retained in the predictor's implicit matrix (fvm::Sp(Sp+divU,.))
-// purely for numerical regularization -- it matches the canonical interFoam
-// VoF predictor structure and keeps the U-p-alpha coupling well-conditioned
-// for this solver's extreme density ratio (rho_l/rho_v ~ 1626).  Its bias
-// (divU = PCV is ~1626x larger in magnitude than alpha1Gen = mdot/rho_l) is
-// removed via deferred correction in alphaEqn.H: the explicit RHS subtracts
-// divU*alpha1.oldTime() to cancel the implicit divU*alpha1 contribution, so
-// the net source scales with divU*(alpha1-alpha1.oldTime()) [O(dt), small]
-// instead of divU*alpha1 [O(1), the ~35-38x growth bug from an earlier
-// attempt that added divU with no compensation at all]. A second earlier
-// attempt removed divU entirely (pure Sp, no regularization) -- that is
-// exactly mass-conservative in continuous form but destabilized the
-// U-p-alpha coupling from the very first timestep (spurious 5-15 m/s
-// velocities), sweeping the droplet away via convection. Deferred
-// correction keeps both properties: implicit divU for stability, near-zero
-// net bias for accuracy.
-tmp<volScalarField> tDivU(fvc::div(phi));
-const volScalarField& divU = tDivU();
+// No divU term: isoAdvector is conservative flux-form advection and the
+// dilatation (PCV) sits outside the receiving cells (see git history of
+// cbf786e for the spurious growth an alpha*divU term caused).
 
 tmp<volScalarField> tAlpha1Gen(phaseChangePtr->alpha1Gen());
 
-const scalarField& alpha1GenI = tAlpha1Gen().primitiveField();
-const scalarField& alpha1I    = alpha1.primitiveField();
-
-const scalar alphaFloor = 0.01;  // prevents Sp stiffness when alpha1 → 0
-
-volScalarField::Internal Su
-(
-    IOobject
-    (
-        "Su",
-        mesh.time().timeName(),
-        mesh,
-        IOobject::NO_READ,
-        IOobject::NO_WRITE
-    ),
-    mesh,
-    dimensionedScalar("Su", dimless/dimTime, Zero)
-);
-
-volScalarField::Internal Sp
-(
-    IOobject
-    (
-        "Sp",
-        mesh.time().timeName(),
-        mesh,
-        IOobject::NO_READ,
-        IOobject::NO_WRITE
-    ),
-    mesh,
-    dimensionedScalar("Sp", dimless/dimTime, Zero)
-);
-
-forAll(Su, celli)
 {
-    const scalar src = alpha1GenI[celli];
-    if (src < 0.0)
+    const scalarField& S = tAlpha1Gen().primitiveField();
+    const scalarField& a = alpha1.primitiveField();
+    const scalarField& V = mesh.V();
+    const scalar dt = runTime.deltaTValue();
+    const labelUList& own = mesh.owner();
+    const labelUList& nei = mesh.neighbour();
+    const cellList& cells = mesh.cells();
+    const label nPass = 5;
+
+    // Requested phase-1 volume change per cell over the step [m3]
+    scalarField dVol(S*V*dt);
+
+    // Push direction: unit grad(alpha1) (towards phase 1)
+    vectorField dir(fvc::grad(alpha1)().primitiveField());
+    forAll(dir, celli)
     {
-        // Consumed-phase sink: implicit to prevent alpha1 going negative
-        Sp[celli] = src / max(alpha1I[celli], alphaFloor);
+        const scalar m = mag(dir[celli]);
+        dir[celli] = (m > SMALL ? dir[celli]/m : vector::zero);
     }
-    else if (src > 0.0)
+    scalar unplaced = 0;
+
+    for (label pass = 0; pass <= nPass; ++pass)
     {
-        // Produced-phase source: explicit, receiving cell has headroom
-        Su[celli] = src;
+        scalarField excess(dVol.size(), Zero);
+        forAll(dVol, celli)
+        {
+            const scalar lo = -a[celli]*V[celli];          // max removal
+            const scalar hi = (1 - a[celli])*V[celli];     // max addition
+            if (dVol[celli] < lo)
+            {
+                excess[celli] = dVol[celli] - lo;
+                dVol[celli] = lo;
+            }
+            else if (dVol[celli] > hi)
+            {
+                excess[celli] = dVol[celli] - hi;
+                dVol[celli] = hi;
+            }
+        }
+
+        if (pass == nPass)
+        {
+            unplaced += sum(mag(excess));
+            break;
+        }
+
+        // Pass each excess to the local face neighbour best able to take it
+        forAll(excess, celli)
+        {
+            const scalar e = excess[celli];
+            if (e == 0) continue;
+            // sinks move towards phase 1 (+dir), sources towards phase 2
+            const vector d = (e < 0 ? 1 : -1)*dir[celli];
+            label best = -1;
+            scalar bestScore = -GREAT;
+            for (const label facei : cells[celli])
+            {
+                if (!mesh.isInternalFace(facei)) continue;
+                const label nb = (own[facei] == celli ? nei[facei] : own[facei]);
+                // remaining capacity of the neighbour after its own request
+                const scalar cap =
+                    e < 0
+                  ? a[nb]*V[nb] + dVol[nb]
+                  : (1 - a[nb])*V[nb] - dVol[nb];
+                if (cap <= 0) continue;
+                const vector cn(mesh.C()[nb] - mesh.C()[celli]);
+                // alignment first, capacity as tie-break
+                const scalar score = (cn/mag(cn) & d) + 1e-6*cap/V[nb];
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    best = nb;
+                }
+            }
+            if (best >= 0)
+            {
+                dVol[best] += e;
+                if (mag(dir[best]) < 0.5)
+                {
+                    dir[best] = dir[celli];
+                }
+            }
+            else
+            {
+                unplaced += mag(e);
+            }
+        }
     }
+
+    Su.field() = dVol/(V*dt);
+
+    const scalar requested = gSum(S*V);
+    Info<< "alphaSuSp: requested " << requested << " m3/s, placed "
+        << gSum(Su.field()*V) << " m3/s, unplaced "
+        << returnReduce(unplaced, sumOp<scalar>())/dt << " m3/s" << endl;
 }
-
-// --- Boundedness-loss compensation -----------------------------------------
-// The redistributed alpha1Gen spreads symmetrically across the diffuse
-// interface. The portion landing on cells already depleted of the consumed
-// phase (alpha.solid -> 0 for a melt sink) cannot be applied: the bounded
-// update Sp*alpha1 -> 0 there, and that mass-conversion credit evaporates.
-// Consequence: APPLIED phase change is only ~0.48x the heat-flux rate,
-// stalling the front at ~0.65x analytical despite the thermal path being
-// correct. This block rescales Su and Sp so the APPLIED integral matches
-// the REQUESTED integral, restoring the analytical front speed.
-// Sign-agnostic => general for melting, solidification, evaporation,
-// condensation and both equal / unequal density configurations.
-{
-    const scalarField& Vc = mesh.V().field();
-
-    // Requested: heat-flux-determined total source
-    const scalar reqInt = gSum(alpha1GenI*Vc);
-
-    // Applied: what Su/Sp actually deliver given the current alpha1 field.
-    // Explicit Su contributes directly; implicit Sp contributes Sp*alpha1.
-    scalar appLoc = 0.0;
-    forAll(Su, celli)
-    {
-        appLoc += (Sp[celli]*alpha1I[celli] + Su[celli])*Vc[celli];
-    }
-    const scalar appInt = returnReduce(appLoc, sumOp<scalar>());
-
-    // Geff >= 1: boost to compensate MULES boundedness loss.
-    // Clamp to [1, 2] — never inverts the source; caps boost so numerical noise
-    // in reqInt/appInt (observed as high as 40x ratio) is not amplified catastrophically.
-    // Gmax lowered 5→2: sufficient for the Stefan-validated planar front (Geff ≈ 1–1.5
-    // in practice) while preventing ×5 amplification of near-zero noise sources.
-    const scalar Gmax = 2.0;
-    scalar Geff = 1.0;
-    if (mag(appInt) > VSMALL && mag(reqInt) > VSMALL)
-    {
-        Geff = min(max(reqInt/appInt, scalar(1)), Gmax);
-    }
-
-    forAll(Su, celli)
-    {
-        Su[celli] *= Geff;
-        Sp[celli] *= Geff;
-    }
-
-    Info<< "alphaSuSp: Geff=" << Geff
-        << "  reqInt=" << reqInt << "  appInt=" << appInt << endl;
-}
-

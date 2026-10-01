@@ -1,0 +1,26 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  v2412                                 |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version 2.0;
+    format ascii;
+    class dictionary;
+    object phaseChangeProperties;
+}
+
+// Runtime-selectable phase-change // Sharp ghost-fluid model (HardtWondra). Paraffin properties of the Shaikh
+// et al. (2016) one-phase Stefan benchmark (unchanged from the validated
+// June-2026 case): phase 1 = solid (alpha.solid = 1), phase 2 = melt.
+model           HardtWondra;
+
+T_sat           313;        // melting point [K]
+h_lv            175000;     // latent heat of fusion, solid -> melt [J/kg]
+k1              0.21;       // solid conductivity [W/m/K]
+k2              0.21;       // melt conductivity [W/m/K]
+
+// ************************************************************************* //

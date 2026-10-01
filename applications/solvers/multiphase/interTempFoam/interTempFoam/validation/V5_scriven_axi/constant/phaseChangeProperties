@@ -1,0 +1,23 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+  =========                 |
+  \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox
+   \\    /   O peration     | Version:  v2412
+    \\  /    A nd           | Website:  www.openfoam.com
+     \\/     M anipulation  |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      phaseChangeProperties;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+// Phase 1 = liquid water (alpha.water = 1), phase 2 = vapour.
+model           HardtWondra;
+
+T_sat           373;        // [K]
+h_lv            2.257e6;    // [J/kg]
+k1              0.6;        // water [W/m/K]
+k2              0.026;      // vapour [W/m/K]

@@ -1,0 +1,21 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+  =========                 |
+  \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox
+   \\    /   O peration     | Version:  v2412
+    \\  /    A nd           | Website:  www.openfoam.com
+     \\/     M anipulation  |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      phaseChangeProperties;
+}
+// Phase 1 = liquid ethanol, phase 2 = vapour (EBIT eq. 50)
+model           HardtWondra;
+
+T_sat           351.45;     // [K]
+h_lv            9.63e5;     // [J/kg]
+k1              0.154;      // liquid [W/m/K]
+k2              0.02;       // vapour [W/m/K]

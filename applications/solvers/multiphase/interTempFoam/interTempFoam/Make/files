@@ -1,3 +1,8 @@
+thermalPhaseChangeModels/thermalPhaseChangeModel.C
+thermalPhaseChangeModels/newThermalPhaseChangeModel.C
+thermalPhaseChangeModels/noPhaseChange.C
+thermalPhaseChangeModels/HardtWondra.C
+thermalPhaseChangeModels/interfaceCurvatureITF.C
 interTempFoam.C
 
 EXE = $(FOAM_USER_APPBIN)/interTempFoam

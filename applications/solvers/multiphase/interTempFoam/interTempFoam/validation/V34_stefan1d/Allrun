@@ -1,0 +1,8 @@
+#!/bin/sh
+# V3/V4 1D phase change. Usage: ./Allrun <stefan|sucking> <N>
+cd "${0%/*}" || exit
+. ${WM_PROJECT_DIR:?}/bin/tools/RunFunctions
+python3 gen.py "$1" "$2" > log.gen || exit 1
+runApplication blockMesh
+runApplication $(getApplication)
+python3 post.py > log.post 2>&1

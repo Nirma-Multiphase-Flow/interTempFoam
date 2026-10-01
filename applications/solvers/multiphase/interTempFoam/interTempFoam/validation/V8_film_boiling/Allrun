@@ -1,0 +1,14 @@
+#!/bin/sh
+# V8 2D film boiling. Usage: ./Allrun <nx> [nProcs]
+cd "${0%/*}" || exit
+. ${WM_PROJECT_DIR:?}/bin/tools/RunFunctions
+n=${1:-200}
+np=${2:-8}
+python3 gen.py "$n" > log.gen || exit 1
+runApplication blockMesh
+python3 gen.py "$n" init >> log.gen || exit 1
+sed -i "s/numberOfSubdomains.*/numberOfSubdomains $np;/" system/decomposeParDict
+runApplication decomposePar
+runParallel $(getApplication)
+runApplication reconstructPar
+python3 post.py > log.post 2>&1

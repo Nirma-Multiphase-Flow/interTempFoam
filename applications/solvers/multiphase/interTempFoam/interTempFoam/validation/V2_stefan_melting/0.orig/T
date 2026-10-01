@@ -1,0 +1,30 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  v2412                                 |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volScalarField;
+    object      T;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * /
+
+dimensions      [0 0 0 1 0 0 0];
+
+internalField   uniform 313;          // T_sat everywhere; setFields overrides
+
+boundaryField
+{
+    leftWall        { type fixedValue;    value uniform 350; }  // T_W = 350 K
+    rightWall       { type fixedValue;    value uniform 313; }  // T_sat = 313 K
+    top             { type symmetryPlane;                    }
+    bottom          { type symmetryPlane;                    }
+    frontAndBack    { type empty;                            }
+}
+
+// ************************************************************************* //

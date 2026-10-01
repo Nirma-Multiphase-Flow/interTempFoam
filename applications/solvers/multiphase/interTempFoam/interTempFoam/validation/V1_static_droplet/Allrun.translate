@@ -1,0 +1,16 @@
+#!/bin/sh
+# Gate 2 pure-advection test: ./Allrun.translate <R/h>
+cd "${0%/*}" || exit
+. ${WM_PROJECT_DIR:?}/bin/tools/RunFunctions
+python3 gen.py translate "$1" || exit 1
+restore0Dir
+sed -i 's/^internalField   uniform (0 0 0);/internalField   uniform (0 1 0);/; s/walls           { type noSlip; }/walls           { type fixedValue; value uniform (0 1 0); }/' 0/U
+sed -i 's/^sigma .*/sigma           0;   \/\/ pure advection test/' constant/transportProperties
+sed -i 's/^    pRefValue           0;/    pRefValue           0;\n    frozenFlow          yes;/' system/fvSolution
+runApplication blockMesh
+runApplication -s C0 postProcess -func writeCellCentres -time 0
+runApplication -s alpha python3 init_alpha.py
+runApplication $(getApplication)
+runApplication -s C postProcess -func writeCellCentres -latestTime
+runApplication -s V postProcess -func writeCellVolumes -latestTime
+python3 post_translate.py > log.post 2>&1

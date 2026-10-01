@@ -1,1 +1,0 @@
-../StefanEquilibriumMerged/StefanEquilibriumMerged.H

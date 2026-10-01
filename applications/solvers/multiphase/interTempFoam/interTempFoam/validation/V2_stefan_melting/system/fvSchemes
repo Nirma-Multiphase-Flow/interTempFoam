@@ -1,0 +1,69 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  v2412                                 |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      fvSchemes;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+ddtSchemes
+{
+    default         Euler;
+}
+
+gradSchemes
+{
+    default         Gauss linear;
+    // Cell-limited gradient for T and U prevents gradient overshoot at the
+    // VOF interface where large alpha/T jumps are present.
+    grad(T)         cellLimited Gauss linear 1;
+    grad(U)         cellLimited Gauss linear 1;
+}
+
+divSchemes
+{
+    div(rhoPhi,U)   Gauss linearUpwind grad(U);
+    div(phi,alpha)  Gauss vanLeer;
+    div(phirb,alpha) Gauss vanLeer;
+    div(phiStefan,alpha)  Gauss vanLeer;
+    div(((rho*nuEff)*dev2(T(grad(U))))) Gauss linear;
+    // limitedLinear is second-order TVD: preserves steep thermal gradients at
+    // the interface (critical for Q_pc ∝ |∇T|) while preventing oscillations.
+    // upwind was over-diffusive and systematically underestimated |∇T|.
+    div(rhoCpPhi,T) Gauss limitedLinear 1;
+    div(phiN_HW,Gx_vap)         Gauss upwind;
+    div(phiN_HW,Gy_vap)         Gauss upwind;
+    div(phiN_HW,Gz_vap)         Gauss upwind;
+
+    div(-phiN_HW,Gx_liq)        Gauss upwind;
+    div(-phiN_HW,Gy_liq)        Gauss upwind;
+    div(-phiN_HW,Gz_liq)        Gauss upwind;
+    
+    div((interpolate(rhoCp)*phi),T) Gauss limitedLinear 1;
+}
+
+laplacianSchemes
+{
+    default         Gauss linear corrected;
+}
+
+interpolationSchemes
+{
+    default         linear;
+}
+
+snGradSchemes
+{
+    default         corrected;
+}
+
+
+// ************************************************************************* //

@@ -1,0 +1,44 @@
+/*--------------------------------*- C++ -*----------------------------------*\\
+  =========                 |
+  \\\\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox
+   \\\\    /   O peration     | Version:  v2412
+    \\\\  /    A nd           | Website:  www.openfoam.com
+     \\\\/     M anipulation  |
+\\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      transportProperties;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+// Static droplet, Popinet (2009) J. Comput. Phys. 228:5838, Sec. 5.1:
+// Laplace number La = sigma rho D / mu^2 = 12000, equal densities and
+// viscosities, D = 0.8, sigma = 1, rho = 1  =>  mu = sqrt(sigma rho D/La)
+// = 8.16497e-3.  cp/Pr are required by the solver's mixture class; they are
+// irrelevant here (uniform T, no phase change).
+phases (liquid gas);
+
+liquid
+{
+    transportModel  Newtonian;
+    nu              8.16497e-3;
+    rho             1;
+    cp              1;
+    Pr              1;
+}
+
+gas
+{
+    transportModel  Newtonian;
+    nu              8.16497e-3;
+    rho             1;
+    cp              1;
+    Pr              1;
+}
+
+sigma           1;
+
+#sinclude "curvatureSettings"

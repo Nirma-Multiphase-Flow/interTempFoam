@@ -1,0 +1,71 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  v2412                                 |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      blockMeshDict;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+
+convertToMeters 1;
+
+vertices
+(
+    ( 0     0      0    )  // 0
+    ( 0.28  0      0    )  // 1
+    ( 0.28  0.14   0    )  // 2
+    ( 0     0.14   0    )  // 3
+    ( 0     0      0.0028)  // 4
+    ( 0.28  0      0.0028)  // 5
+    ( 0.28  0.14   0.0028)  // 6
+    ( 0     0.14   0.0028)  // 7
+);
+
+blocks
+(
+    // nx=100 resolves melting front; ny=50 for 2D completeness
+    hex (0 1 2 3 4 5 6 7) (250 125 1) simpleGrading (1 1 1)
+);
+
+edges ();
+
+boundary
+(
+    leftWall        // T = T_W = 350 K
+    {
+        type wall;
+        faces ((0 4 7 3));
+    }
+    rightWall       // T = T_sat = 313 K  (solid kept at melting point)
+    {
+        type wall;
+        faces ((1 2 6 5));
+    }
+    top             // Symmetry: problem is 1-D in x
+    {
+        type symmetryPlane;
+        faces ((3 7 6 2));
+    }
+    bottom
+    {
+        type symmetryPlane;
+        faces ((0 1 5 4));
+    }
+    frontAndBack    // 2-D empty
+    {
+        type empty;
+        faces
+        (
+            (0 3 2 1)
+            (4 5 6 7)
+        );
+    }
+);

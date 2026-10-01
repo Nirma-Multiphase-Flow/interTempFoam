@@ -1,0 +1,39 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+  =========                 |
+  \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox
+   \\    /   O peration     | Version:  v2412
+    \\  /    A nd           | Website:  www.openfoam.com
+     \\/     M anipulation  |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      transportProperties;
+}
+// V7 ethanol at 1 atm, Florschuetz et al. (1969) as tabulated in
+// Long, Pan & Zaleski, EBIT, arXiv:2402.13677 eq. (50).
+phases (ethanol vapour);
+
+ethanol
+{
+    transportModel  Newtonian;
+    nu              5.667107e-07;   // mu 4.29e-4 / rho 757
+    rho             757;
+    cp              3000;
+    Pr              8.357143;       // 4.29e-4*3000/0.154
+}
+
+vapour
+{
+    transportModel  Newtonian;
+    nu              7.247387e-06;   // mu 1.04e-5 / rho 1.435
+    rho             1.435;
+    cp              1830;
+    Pr              0.9516;         // 1.04e-5*1830/0.02
+}
+
+sigma           0.018;
+
+curvatureModel  heightFunction;
