@@ -1,9 +1,10 @@
 # interTempFoam
 
-A non-isothermal, sharp-interface two-phase VOF solver with phase change for **OpenFOAM v2412**
+A non-isothermal two-phase VOF solver with phase change for **OpenFOAM v2412**
 (openfoam.com), derived from `interFoam` / `interIsoFoam`. It combines geometric VOF
-(`isoAdvection` + PLIC), an energy equation, and a sharp-interface evaporation/condensation model
-(`HardtWondra`) in which the interface is moved by the **total velocity** `u_t = u + u_PC`.
+(**isoAdvector**, Roenby et al. 2016, through OpenFOAM's `isoAdvection`, with PLIC
+reconstruction), an energy equation, and an evaporation/condensation model (`HardtWondra`) in
+which the interface is moved by the **total velocity** `u_t = u + u_PC`.
 
 > **Status: research code.** Validated against analytic solutions for the 1D Stefan problem and a
 > short axisymmetric d²-law droplet run (see [Validation](#validation)). Other case generators are
@@ -32,12 +33,13 @@ A non-isothermal, sharp-interface two-phase VOF solver with phase change for **O
 
 ## Features
 
-- Geometric VOF with `isoAdvection` and PLIC reconstruction (`plicRDF`); without phase change alpha
-  stays bounded and volume is conserved to about 1e-11 (relative).
+- Geometric VOF with the **isoAdvector** method (Roenby et al. 2016; OpenFOAM class `isoAdvection`) and
+  PLIC reconstruction (`plicRDF`); without phase change alpha stays bounded and volume is conserved
+  to about 1e-11 (relative).
 - Phase change through the total interface velocity `u_t = u + u_PC` (Gada & Sharma 2009, Eq. 13;
   Shaikh et al. 2016, Eq. 8), with the interface normal taken from the reconstructed distance
   function (RDF), not from `grad(alpha)`.
-- `HardtWondra` sharp-interface model: ghost-fluid Tsat condition in the temperature equation, mass
+- `HardtWondra` phase-change model: ghost-fluid Tsat condition in the temperature equation, mass
   flux from pure-cell probes (Malan et al. 2021), shifted dilatation (Hardt & Wondra 2008).
 - Interface curvature from the PLIC signed distance: `gradAlpha`, `RDF`, `heightFunction`, `constant`.
 - Energy equation with a flux consistent with the geometric alpha flux (`rhoCpPhi`).
@@ -67,7 +69,7 @@ below are those of the code; the sections name the files that implement them.
 Both phases are incompressible and Newtonian with constant properties, described by one velocity and
 one pressure field (single-fluid formulation).
 
-**Continuity** (`pEqn.H`). At a sharp interface with mass flux `mdot''` the normal velocity jumps by
+**Continuity** (`pEqn.H`). Across the interface, with mass flux `mdot''`, the normal velocity jumps by
 `mdot'' (1/rho2 - 1/rho1)`. The model spreads this into a smooth volumetric source `PCV`
 (see [Shifted dilatation](#shifted-dilatation)):
 
@@ -122,7 +124,7 @@ $$\frac{\partial\alpha}{\partial t} + \mathbf{u}_t\cdot\nabla\alpha = 0,\qquad
 \mathbf{u}_{PC} = \frac{\dot m''}{\rho_1}\,\mathbf{n},\quad
 \mathbf{n} = \frac{\nabla\psi}{|\nabla\psi|}$$
 
-`isoAdvection` solves the flux form, so with the face fluxes `phiPC = u_PC·S` and
+isoAdvector (`isoAdvection`) solves the flux form, so with the face fluxes `phiPC = u_PC·S` and
 `phiT = phi + phiPC` the equation actually solved is
 
 $$\frac{\partial\alpha}{\partial t} + \nabla\cdot(\alpha\,\phi_T) = \alpha\,\nabla\cdot\phi_{PC}$$
@@ -214,7 +216,7 @@ counted and ignored. `a_G = |S_PLIC|/V` on genuine cells.
 ## Phase-change model `HardtWondra`
 
 Implemented in `thermalPhaseChangeModels/HardtWondra.[CH]` on top of the base class
-`thermalPhaseChangeModel` (runtime selection through `phaseChangeProperties`). The model is sharp:
+`thermalPhaseChangeModel` (runtime selection through `phaseChangeProperties`). In this model
 conduction is cut at the interface, the interface temperature is `T_sat`, and the mass flux follows
 from the heat flux into the interface.
 
@@ -353,7 +355,7 @@ applications/solvers/multiphase/interTempFoam/interTempFoam/
 ├── UEqn.H, pEqn.H, TEqn.H, correctPhi.H, initCorrectPhi.H, rhofs.H, setDeltaT.H
 ├── thermalPhaseChangeModels/ compiled into the solver
 │   ├── thermalPhaseChangeModel.[CH], newThermalPhaseChangeModel.C   base class + selector
-│   ├── HardtWondra.[CH]                                             sharp phase-change model
+│   ├── HardtWondra.[CH]                                             phase-change model
 │   ├── noPhaseChange.[CH]                                           disabled model
 │   └── interfaceCurvatureITF.[CH]                                   psiRDF, a_G, curvature, surface force
 ├── validation/               case generators and run scripts (see Validation)
@@ -513,7 +515,7 @@ currents and the Laplace jump of a chosen curvature model at your resolution.
 - `HardtWondra` is the only phase-change model besides `noPhaseChange`; condensation (`mdot < 0`) follows
   from the sign of the heat flux but has not been validated.
 - The mass transfer uses the converged temperature of the previous step (one-step lag).
-- The velocity form needs a sharp model whose `mdot'''` sits in interface cells.
+- The velocity form needs a model whose `mdot'''` sits in interface cells.
 - The dilatation normalisation assumes one connected interface (warning otherwise); with different phase
   densities the domain needs an outlet.
 - The coefficient of `u_PC` is fixed to `1/rho1` (see above); a model that places the dilatation at the
@@ -529,5 +531,4 @@ currents and the Laplace jump of a chosen curvature model at your resolution.
 - Hardt & Wondra (2008), J. Comput. Phys. 227, 5871–5895.
 - Gibou, Chen, Fedkiw (2002), J. Comput. Phys. 176, 205–227.
 - Malan et al. (2021), J. Comput. Phys. 426, 109920.
-- Roenby, Bredmose, Jasak (2016), A computational method for sharp interface advection,
-  Royal Society Open Science 3, 160405.
+- Roenby, Bredmose, Jasak (2016), isoAdvector, Royal Society Open Science 3, 160405.
